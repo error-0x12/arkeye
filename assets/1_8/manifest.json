@@ -1,0 +1,178 @@
+{
+  "templates": [
+    {
+      "enemy_id": "enemy_1007_slime",
+      "source": "battle_capture",
+      "path": "slime.png",
+      "name": "slime"
+    },
+    {
+      "enemy_id": "enemy_1007_slime_2",
+      "source": "battle_capture",
+      "path": "slime_alpha.png",
+      "name": "slime_alpha"
+    },
+    {
+      "enemy_id": "enemy_1000_gopro_2",
+      "source": "battle_capture",
+      "path": "hound.png",
+      "name": "hound"
+    },
+    {
+      "enemy_id": "enemy_1002_nsabr",
+      "source": "battle_capture",
+      "path": "soldier.png",
+      "name": "soldier"
+    },
+    {
+      "enemy_id": "enemy_1011_wizard",
+      "source": "battle_capture",
+      "path": "wizard.png",
+      "name": "wizard"
+    },
+    {
+      "enemy_id": "enemy_1005_yokai",
+      "source": "battle_capture",
+      "path": "drone.png",
+      "name": "drone"
+    },
+    {
+      "enemy_id": "enemy_1029_shdsbr",
+      "source": "battle_capture",
+      "path": "shield.png",
+      "name": "shield"
+    },
+    {
+      "enemy_id": "enemy_1502_crowns",
+      "source": "battle_capture",
+      "path": "crownslayer.png",
+      "name": "crownslayer"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_green.png",
+      "name": "136_hsguma_default"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_cat.png",
+      "name": "102_texas_default"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_chainsaw.png",
+      "name": "017_huang_default"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_gray.png",
+      "name": "172_svrash_default"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_support.png",
+      "name": "108_silent_drone"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_witch.png",
+      "name": "friendly_witch"
+    },
+    {
+      "enemy_id": "enemy_1007_slime_2",
+      "source": "battle_capture",
+      "path": "slime_alpha_left.png",
+      "name": "slime_alpha_left"
+    },
+    {
+      "enemy_id": "enemy_1007_slime_2",
+      "source": "battle_capture",
+      "path": "slime_alpha_right.png",
+      "name": "slime_alpha_right"
+    },
+    {
+      "enemy_id": "enemy_1005_yokai",
+      "source": "battle_capture",
+      "path": "drone_side.png",
+      "name": "drone_side"
+    },
+    {
+      "enemy_id": "enemy_1029_shdsbr",
+      "source": "battle_capture",
+      "path": "shield_first.png",
+      "name": "shield_first"
+    },
+    {
+      "enemy_id": "enemy_1005_yokai",
+      "source": "battle_capture",
+      "path": "drone_first.png",
+      "name": "drone_first"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "136_hsguma_public.png",
+      "name": "136_hsguma_public"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "017_huang_public.png",
+      "name": "017_huang_public"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "172_svrash_public.png",
+      "name": "172_svrash_public"
+    },
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "102_texas_public.png",
+      "name": "102_texas_public"
+    },
+    {
+      "enemy_id": "enemy_1029_shdsbr",
+      "source": "battle_capture",
+      "path": "shield_side.png",
+      "name": "shield_side"
+    },
+    {
+      "enemy_id": "enemy_1029_shdsbr",
+      "source": "battle_capture",
+      "path": "shield_back.png",
+      "name": "shield_back"
+    },
+    {
+      "enemy_id": "enemy_1000_gopro_2",
+      "source": "battle_capture",
+      "path": "hound_t32.png",
+      "name": "hound_t32"
+    },
+    {
+      "enemy_id": "enemy_1000_gopro_2",
+      "source": "battle_capture",
+      "path": "hound_t36.png",
+      "name": "hound_t36"
+    },
+    {
+      "enemy_id": "enemy_1002_nsabr",
+      "source": "battle_capture",
+      "path": "soldier_t60.png",
+      "name": "soldier_t60"
+    },
+    {
+      "enemy_id": "enemy_1007_slime_2",
+      "source": "battle_capture",
+      "path": "slime_alpha_pair.png",
+      "name": "slime_alpha_pair"
+    }
+  ]
+}

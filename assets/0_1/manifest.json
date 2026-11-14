@@ -1,0 +1,34 @@
+{
+  "templates": [
+    {
+      "enemy_id": "friendly",
+      "source": "battle_capture",
+      "path": "friendly_t12.png",
+      "name": "friendly_t12"
+    },
+    {
+      "enemy_id": "enemy_1007_slime",
+      "source": "battle_capture",
+      "path": "slime_t12.png",
+      "name": "slime_t12"
+    },
+    {
+      "enemy_id": "enemy_1007_slime",
+      "source": "battle_capture",
+      "path": "slime_t16_center.png",
+      "name": "slime_t16_center"
+    },
+    {
+      "enemy_id": "enemy_1007_slime",
+      "source": "battle_capture",
+      "path": "slime_t16_right.png",
+      "name": "slime_t16_right"
+    },
+    {
+      "enemy_id": "enemy_1002_nsabr",
+      "source": "battle_capture",
+      "path": "soldier_t40.png",
+      "name": "soldier_t40"
+    }
+  ]
+}

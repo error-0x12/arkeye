@@ -1,0 +1,62 @@
+{
+  "136_hsguma_default": {
+    "name": "星熊",
+    "profession": "MELEE",
+    "skin": "default",
+    "display": "Hoshiguma"
+  },
+  "136_hsguma_public": {
+    "name": "星熊",
+    "profession": "MELEE",
+    "skin": "public_default",
+    "display": "Hoshiguma"
+  },
+  "017_huang_default": {
+    "name": "煌",
+    "profession": "MELEE",
+    "skin": "default",
+    "display": "Blaze"
+  },
+  "017_huang_public": {
+    "name": "煌",
+    "profession": "MELEE",
+    "skin": "public_default",
+    "display": "Blaze"
+  },
+  "172_svrash_default": {
+    "name": "银灰",
+    "profession": "MELEE",
+    "skin": "default",
+    "display": "SilverAsh"
+  },
+  "172_svrash_public": {
+    "name": "银灰",
+    "profession": "MELEE",
+    "skin": "public_default",
+    "display": "SilverAsh"
+  },
+  "102_texas_default": {
+    "name": "德克萨斯",
+    "profession": "MELEE",
+    "skin": "default",
+    "display": "Texas"
+  },
+  "102_texas_public": {
+    "name": "德克萨斯",
+    "profession": "MELEE",
+    "skin": "public_default",
+    "display": "Texas"
+  },
+  "108_silent_drone": {
+    "name": "支援装置",
+    "profession": "RANGED",
+    "skin": "default",
+    "display": "Support"
+  },
+  "friendly_witch": {
+    "name": "friendly",
+    "profession": "RANGED",
+    "skin": "unknown",
+    "display": "friendly"
+  }
+}
