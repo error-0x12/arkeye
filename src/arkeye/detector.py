@@ -63,6 +63,7 @@ class Detection:
     faction_evidence: str | None = None
     health_bar_bbox: BoundingBox | None = None
     skill_icon_bbox: BoundingBox | None = None
+    template_matches: dict[str, TemplateMatch] | None = None
 
 
 def appearance_signature(image: NDArray[np.uint8], mask: NDArray[np.uint8]) -> NDArray[np.float32]:
@@ -189,20 +190,21 @@ class TemplateClassifier:
     def __init__(self, library: TemplateLibrary) -> None:
         self.library = library
 
-    def classify(
+    def score_by_enemy(
         self,
         image: NDArray[np.uint8],
         silhouette: NDArray[np.uint8],
         *,
         allowed_enemy_ids: Iterable[str] | None = None,
-    ) -> TemplateMatch | None:
+    ) -> dict[str, TemplateMatch]:
+        """Return the best unmodified template score for every candidate class."""
+
         if image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
             raise DetectionError("Candidate image must be a uint8 BGR image")
         height, width = image.shape[:2]
         if silhouette.shape != (height, width):
             raise DetectionError("Candidate silhouette must match its image")
 
-        best: TemplateMatch | None = None
         best_by_enemy: dict[str, TemplateMatch] = {}
         observed_mask = silhouette > 0
         for original in self.library.for_enemies(allowed_enemy_ids):
@@ -240,14 +242,38 @@ class TemplateClassifier:
             previous = best_by_enemy.get(original.enemy_id)
             if previous is None or match.confidence > previous.confidence:
                 best_by_enemy[original.enemy_id] = match
-            if best is None or match.confidence > best.confidence:
-                best = match
-        if best is not None:
-            rivals = [match for enemy_id, match in best_by_enemy.items() if enemy_id != best.enemy_id]
-            if rivals:
-                rival = max(rivals, key=lambda match: match.confidence)
-                if best.confidence - rival.confidence < 0.035:
-                    best = replace(best, confidence=min(best.confidence, 0.59))
+        return best_by_enemy
+
+    @staticmethod
+    def _best_with_ambiguity(best_by_enemy: dict[str, TemplateMatch]) -> TemplateMatch | None:
+        if not best_by_enemy:
+            return None
+        best = max(best_by_enemy.values(), key=lambda match: match.confidence)
+        rivals = [match for enemy_id, match in best_by_enemy.items() if enemy_id != best.enemy_id]
+        if rivals:
+            rival = max(rivals, key=lambda match: match.confidence)
+            if best.confidence - rival.confidence < 0.035:
+                best = replace(best, confidence=min(best.confidence, 0.59))
+        return best
+
+    def classify_with_scores(
+        self,
+        image: NDArray[np.uint8],
+        silhouette: NDArray[np.uint8],
+        *,
+        allowed_enemy_ids: Iterable[str] | None = None,
+    ) -> tuple[TemplateMatch | None, dict[str, TemplateMatch]]:
+        best_by_enemy = self.score_by_enemy(image, silhouette, allowed_enemy_ids=allowed_enemy_ids)
+        return self._best_with_ambiguity(best_by_enemy), best_by_enemy
+
+    def classify(
+        self,
+        image: NDArray[np.uint8],
+        silhouette: NDArray[np.uint8],
+        *,
+        allowed_enemy_ids: Iterable[str] | None = None,
+    ) -> TemplateMatch | None:
+        best, _ = self.classify_with_scores(image, silhouette, allowed_enemy_ids=allowed_enemy_ids)
         return best
 
     def locate(
@@ -545,6 +571,11 @@ class BattlefieldDetector:
             x, y, width, height = candidate.bbox
             if width * height > analysis_frame.shape[0] * analysis_frame.shape[1] * 0.50:
                 continue
+            # 血条、技能条这类细横条不是作战单位。它们会被当成候选送上分类器，
+            # 偶尔匹配到 friendly 模板（分数不高）就带上「可能我方」，随后被融合层
+            # 整条剔除，看起来就像敌方的血条把它自己判成了我方。
+            if height < 12 or (height < 20 and width / max(height, 1) > 4.0):
+                continue
             image = analysis_frame[y : y + height, x : x + width]
             if self._is_prompt_panel(candidate, image):
                 continue
@@ -558,7 +589,11 @@ class BattlefieldDetector:
                 elif matched is not None and matched.kind == "enemy":
                     available = self.allowed_enemy_ids or tuple(template.enemy_id for template in self.classifier.library.templates)
                     candidate_allowed_ids = tuple(enemy_id for enemy_id in available if enemy_id != "friendly")
-            match = self.classifier.classify(image, candidate.mask, allowed_enemy_ids=candidate_allowed_ids)
+            match, template_matches = self.classifier.classify_with_scores(
+                image,
+                candidate.mask,
+                allowed_enemy_ids=candidate_allowed_ids,
+            )
             threshold = self.class_confidence_thresholds.get(match.enemy_id, self.confidence_threshold) if match else self.confidence_threshold
             recognized = match is not None and match.confidence >= threshold
             artifact_pixels = cv2.countNonZero(cv2.bitwise_and(candidate.mask, self.foreground.last_artifact_mask[y : y + height, x : x + width]))
@@ -685,6 +720,7 @@ class BattlefieldDetector:
                     appearance=appearance_signature(image, candidate.mask),
                     possible_friendly=possible_friendly,
                     candidate_enemy_id=match.enemy_id if match else None,
+                    template_matches=template_matches,
                 )
             )
         return self._apply_health_bars(detections, frame, health_evidence)
