@@ -86,7 +86,7 @@ def test_occluded_track_keeps_its_own_bbox() -> None:
     second = Detection((1300, 450, 200, 100), (1400, 549), "enemy_1007_slime", 0.8, "test")
     tracker.update((first, second), 0.0)
     tracker.update((), 0.1)
-    merged = Detection((1050, 400, 400, 200), (1250, 599), "enemy_1007_slime", 0.8, "test")
+    merged = Detection((1100, 400, 400, 200), (1300, 599), "enemy_1007_slime", 0.8, "test")
 
     snapshots = tracker.update((merged,), 0.2)
 

@@ -128,11 +128,17 @@ class StageSlotTracker(MultiObjectTracker):
     def _spawn_score(self, enemy_id: str, timestamp: float, foot_point: tuple[float, float], visual_confidence: float) -> float:
         return 0.501 * self._spawn_stage_score(enemy_id, timestamp, foot_point) + 0.499 * visual_confidence
 
-    def _refuse(self, detection: Detection, reason: str, track_id: int | None = None) -> None:
-        """Report a refusal, or an occlusion-support assignment, to the caller."""
+    def _refuse(
+        self,
+        detection: Detection,
+        reason: str,
+        track_id: int | None = None,
+        kind: str | None = None,
+    ) -> None:
+        """Report a refusal (or an occlusion-support assignment) to the caller."""
 
         if self.trace_hook is not None:
-            self.trace_hook(detection, reason, track_id)
+            self.trace_hook(detection, reason, track_id, kind)
 
     def _activate(self, detection: Detection, timestamp: float, status: str = "confirmed") -> _Track | None:
         enemy_id = self._class_at(detection.enemy_id, timestamp)
@@ -192,6 +198,23 @@ class StageSlotTracker(MultiObjectTracker):
 
     # 丢失轨迹重新接回检测的代价系数（乘以当帧运动门限）
     REACQUIRE_COST_WEIGHT = 0.6
+
+    @staticmethod
+    def _covers(track: _Track, detection: Detection, margin_ratio: float = 0.08) -> bool:
+        """这条轨迹的落点是否真的落在该检测框内（带一点余量）。
+
+        之前用的是「到检测框脚点 300 px 内」，对 574x156 这类大框来说，
+        框外几十像素的轨迹也会被判成「被覆盖」，于是同一块前景被分给好几条轨迹，
+        看起来就像目标被死死锁住。
+        """
+
+        x, y, width, height = detection.bbox
+        margin_x, margin_y = width * margin_ratio, height * margin_ratio
+        foot_x, foot_y = track.kalman.statePost[0, 0], track.kalman.statePost[1, 0]
+        return (
+            x - margin_x <= float(foot_x) <= x + width + margin_x
+            and y - margin_y <= float(foot_y) <= y + height + margin_y
+        )
 
     @staticmethod
     def _distance(track: _Track, detection: Detection) -> float:
@@ -296,16 +319,59 @@ class StageSlotTracker(MultiObjectTracker):
 
         speed_rejected_detections = {column for _, column in speed_rejected_pairs}
         for detection_index, detection in enumerate(detections):
-            if detection_index in matched_detection_indices or detection_index in speed_rejected_detections:
+            if detection_index in matched_detection_indices:
                 continue
-            if any(
-                track.misses > 0
-                and (track.track_id, detection_index) not in speed_rejected_pairs
-                and (track.enemy_id == "unknown" or detection.enemy_id == "unknown" or track.enemy_id == detection.enemy_id)
-                and self._distance(track, detection) <= 300
-                and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))
-                for track in self._tracks.values()
-            ):
+            if detection_index in speed_rejected_detections:
+                # 超速的检测以前是静默跳过的，同样会让「进了正式跟踪却没有轨迹」无从解释
+                nearest = min(
+                    (
+                        track
+                        for track in self._tracks.values()
+                        if (track.track_id, detection_index) in speed_rejected_pairs
+                    ),
+                    key=lambda track: self._distance(track, detection),
+                    default=None,
+                )
+                if nearest is not None:
+                    self._refuse(
+                        detection,
+                        f"与最近轨迹 #{nearest.track_id} 相距 "
+                        f"{self._distance(nearest, detection):.0f} px，超过本帧运动门限 "
+                        f"{motion_gate:.0f} px，判定为不可能的一帧位移，不新建身份",
+                        nearest.track_id,
+                        "speed_rejected",
+                    )
+                continue
+            blocker = next(
+                (
+                    track
+                    for track in self._tracks.values()
+                    if track.misses > 0
+                    and (track.track_id, detection_index) not in speed_rejected_pairs
+                    and (
+                        track.enemy_id == "unknown"
+                        or detection.enemy_id == "unknown"
+                        or track.enemy_id == detection.enemy_id
+                    )
+                    and self._covers(track, detection)
+                    and not (
+                        track.misses > 10
+                        and self._in_spawn_region(detection)
+                        and not self._track_in_spawn_region(track)
+                    )
+                ),
+                None,
+            )
+            if blocker is not None:
+                # 以前这里是静默 continue，于是「已识别候选进了正式跟踪却在输出里消失」，
+                # 溯源日志里一条记录都没有。现在明确写出被谁挡住。
+                self._refuse(
+                    detection,
+                    f"该位置已有丢失中的轨迹 #{blocker.track_id}（连续 {blocker.misses} 帧未匹配），"
+                    "先不新建身份，避免同一目标换 ID 重复计数",
+                    blocker.track_id,
+                    "id_blocked",
+                )
                 continue
             self._activate(detection, timestamp)
 
@@ -335,7 +401,7 @@ class StageSlotTracker(MultiObjectTracker):
                 for track in self._tracks.values()
                 if track.misses > 0
                 and (track.track_id, detection_index) not in speed_rejected_pairs
-                and self._distance(track, detection) <= 300
+                and self._covers(track, detection)
                 and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))
             ]
             candidates.sort(key=lambda track: self._distance(track, detection))
@@ -344,7 +410,9 @@ class StageSlotTracker(MultiObjectTracker):
             # group_size 只由「这块前景比典型目标大多少」决定。
             if detection.enemy_id == "unknown" and not assigned and not candidates:
                 group_size = 1
-            needed = group_size - len(assigned)
+            # 只有明显大于单个目标的框才需要分摊；普通大小的框即便没人匹配上，
+            # 也不该拿去给别人当「遮挡支撑」
+            needed = (group_size - len(assigned)) if group_size > 1 else 0
             if needed <= 0:
                 continue
             for track in candidates[:needed]:

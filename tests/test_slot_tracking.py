@@ -292,3 +292,38 @@ def test_lost_track_does_not_steal_a_detection_from_a_confirmed_track() -> None:
     assert by_id[2].misses == 0, "已确认的 B 应该拿到它"
     # 已确认轨迹的框/脚点按 65/35 平滑，所以只是往检测方向移动，不会精确落在 1440
     assert 1440.0 <= by_id[2].foot_point[0] < 1500.0
+
+
+def test_new_identity_rejections_are_logged_instead_of_swallowed() -> None:
+    """被「位移超门限」或「附近有丢失轨迹」挡住的新身份，都必须留下可溯源理由。"""
+
+    def run(wide: Detection) -> list[tuple]:
+        events: list[tuple] = []
+        tracker = StageSlotTracker(
+            expected_counts={"enemy_1007_slime": 2},
+            spawn_bbox=(1200, 350, 550, 400),
+            despawn_x=700,
+            typical_bbox_areas={"enemy_1007_slime": 20_000},
+        )
+        tracker.trace_hook = lambda detection, reason, track_id=None, kind=None: events.append(
+            (kind, track_id, reason)
+        )
+        tracker.update((blob(1400),), 0.0)
+        tracker.update((wide,), 1 / 30)
+        return events
+
+    # 框大小不变、只是跳了 112 px：超过当帧门限 40 px，判为不可能的一帧位移
+    jumped = Detection((1400, 450, 200, 100), (1500.0, 549.0), "enemy_1007_slime", 0.8, "test")
+    events = run(jumped)
+    kinds = [event[0] for event in events]
+    assert "speed_rejected" in kinds, kinds
+    reason = next(event[2] for event in events if event[0] == "speed_rejected")
+    assert "运动门限" in reason
+
+    # 700 px 宽的大框：面积跳变不会进速度通道，但落点仍被框覆盖，属于「同位置已有丢失轨迹」
+    wide = Detection((1300, 450, 700, 100), (1650.0, 549.0), "enemy_1007_slime", 0.8, "test")
+    events = run(wide)
+    kinds = [event[0] for event in events]
+    assert "id_blocked" in kinds, kinds
+    reason = next(event[2] for event in events if event[0] == "id_blocked")
+    assert "丢失" in reason

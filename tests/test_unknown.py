@@ -49,7 +49,7 @@ def test_unknown_merged_blob_preserves_existing_slots() -> None:
     tracker.update((detection(1500, "enemy_1007_slime"), detection(1400, "enemy_1007_slime")), 0.0)
     tracker.update((), 0.1)
 
-    snapshots = tracker.update((detection(1200),), 0.2)
+    snapshots = tracker.update((detection(1450),), 0.2)
 
     assert len(snapshots) == 2
     assert {track.status for track in snapshots} == {"confirmed", "occluded"}

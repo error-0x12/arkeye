@@ -106,19 +106,22 @@ class RouteSpeedFilter:
         if hasattr(self.tracker, "trace_hook"):
             self.tracker.trace_hook = self._on_slot_refusal
 
-    def _on_slot_refusal(self, detection: Detection, reason: str, track_id: int | None = None) -> None:
-        """内层跟踪器的两种事件：拒绝新建轨迹，或把检测作为重叠支撑补进既有轨迹。"""
+    def _on_slot_refusal(
+        self,
+        detection: Detection,
+        reason: str,
+        track_id: int | None = None,
+        kind: str | None = None,
+    ) -> None:
+        """内层跟踪器上报的三种事件：配额拒绝、附近有丢失轨迹、重叠支撑补入。"""
 
         if self._trace_frame is None:
             return
-        if track_id is None:
-            self._trace_frame.setdefault("budget_rejected", []).append(
-                {"reason": reason, "detection": self._trace_detection(detection)}
-            )
-        else:
-            self._trace_frame.setdefault("occluded_support", []).append(
-                {"track_id": track_id, "reason": reason, "detection": self._trace_detection(detection)}
-            )
+        group = kind or ("occluded_support" if track_id is not None else "budget_rejected")
+        item: dict[str, Any] = {"reason": reason, "detection": self._trace_detection(detection)}
+        if track_id is not None:
+            item["track_id"] = track_id
+        self._trace_frame.setdefault(group, []).append(item)
 
     def _nearest_track(self, detection: Detection) -> dict[str, Any]:
         """最近内部轨迹的编号与距离，用来解释「这个候选本来可能是谁的」。"""
