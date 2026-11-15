@@ -12,6 +12,11 @@ ArkEye combines background subtraction, template classification, health-bar evid
 - Template classification with explicit `unknown` support.
 - Friendly/enemy evidence from health bars.
 - Route- and spawn-aware tracking with stable IDs and held tracks.
+- Soft route scoring: distance from a route lowers a candidate's association
+  weight instead of discarding it, and a frame where every candidate misses the
+  route is relaxed rather than dropped, so a stage whose terrain or calibration
+  drifts does not go blind. Route indices stay aligned with the level file even
+  when a route has fewer than two points.
 - Public stage-code resolution and cached stage-data downloads.
 - Optional timeline-primary tracking for 1-8:
   - the public spawn schedule owns enemy identity, class, route, and ID;

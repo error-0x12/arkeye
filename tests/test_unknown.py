@@ -44,6 +44,7 @@ def test_unknown_merged_blob_preserves_existing_slots() -> None:
         spawn_bbox=(1200, 350, 550, 400),
         despawn_x=700,
         typical_bbox_areas={"enemy_1007_slime": 10_000},
+        max_speed=4000.0,
     )
     tracker.update((detection(1500, "enemy_1007_slime"), detection(1400, "enemy_1007_slime")), 0.0)
     tracker.update((), 0.1)

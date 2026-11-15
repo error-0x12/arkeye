@@ -31,11 +31,22 @@ def _route_map_points(route: Mapping[str, Any]) -> list[tuple[float, float]]:
     return points
 
 
-def route_frame_points(level: Mapping[str, Any], calibration: BoardCalibration) -> tuple[NDArray[np.int32], ...]:
-    projected: list[NDArray[np.int32]] = []
+def route_frame_points(
+    level: Mapping[str, Any],
+    calibration: BoardCalibration,
+) -> tuple[NDArray[np.int32] | None, ...]:
+    """Project every level route, keeping list position equal to the route index.
+
+    Dropping unusable routes would shift every later index and make the
+    class -> route mapping point at the wrong line, so unusable routes stay in
+    the tuple as ``None``.
+    """
+
+    projected: list[NDArray[np.int32] | None] = []
     for route in level.get("routes") or []:
         map_points = _route_map_points(route)
         if len(map_points) < 2:
+            projected.append(None)
             continue
         frame_points = calibration.map_points_to_frame(map_points)
         projected.append(np.rint(frame_points).astype(np.int32))
@@ -57,6 +68,8 @@ def build_route_mask(
     tile_size = (float(np.linalg.norm(x_unit - origin)) + float(np.linalg.norm(y_unit - origin))) / 2.0
     thickness = max(5, round(tile_size * width_tiles))
     for points in route_frame_points(level, calibration):
+        if points is None:
+            continue
         cv2.polylines(mask, [points], False, 255, thickness, cv2.LINE_AA)
         for point in points:
             cv2.circle(mask, tuple(point), max(2, thickness // 2), 255, -1, cv2.LINE_AA)

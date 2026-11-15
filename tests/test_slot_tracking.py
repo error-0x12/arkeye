@@ -22,6 +22,7 @@ def test_merged_group_never_manufactures_extra_slots() -> None:
         spawn_bbox=(1200, 350, 550, 400),
         despawn_x=700,
         typical_bbox_areas={"enemy_1007_slime": 10_000},
+        max_speed=4000.0,
     )
 
     spawned = tracker.update((blob(1500),), 0.0)
@@ -57,6 +58,72 @@ def test_speed_limit_rejects_guide_line_jump_without_creating_duplicate() -> Non
     assert len(recovered) == 1
     assert recovered[0].status == "confirmed"
     assert recovered[0].foot_point == (1490.0, 500.0)
+
+
+def test_speed_rejected_target_does_not_create_a_duplicate_track() -> None:
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 2},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        max_speed=300.0,
+    )
+    tracker.update((blob(1500),), 0.0)
+
+    snapshots = tracker.update((blob(1300),), 1 / 30)
+
+    assert len(snapshots) == 1
+    assert snapshots[0].status == "lost"
+    assert snapshots[0].foot_point == (1500.0, 500.0)
+
+
+def test_lost_track_cannot_recover_through_an_impossible_speed_jump() -> None:
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 2},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        max_speed=300.0,
+    )
+    tracker.update((blob(1500),), 0.0)
+    tracker.update((), 0.1)
+
+    snapshots = tracker.update((blob(1300),), 0.2)
+    original = next(track for track in snapshots if track.track_id == 1)
+
+    assert original.status == "lost"
+    assert original.foot_point == (1500.0, 500.0)
+    assert original.velocity == (0.0, 0.0)
+
+
+def test_double_speed_expands_the_association_gate() -> None:
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 1},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        max_speed=300.0,
+    )
+    tracker.update((blob(1500),), 0.0)
+    tracker.set_time_scale(2.0)
+
+    snapshot = tracker.update((blob(1480),), 1 / 30)[0]
+
+    assert snapshot.status == "confirmed"
+    assert snapshot.foot_point == (1493.0, 500.0)
+
+
+def test_measured_velocity_is_capped_by_the_physical_speed_limit() -> None:
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 1},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        max_speed=10.0,
+    )
+    tracker.update((blob(1500),), 0.0)
+    tracker.set_time_scale(2.0)
+
+    snapshot = tracker.update((blob(1488),), 1 / 30)[0]
+
+    assert snapshot.status == "confirmed"
+    assert snapshot.velocity == (-20.0, 0.0)
 
 
 def test_track_records_measured_velocity() -> None:

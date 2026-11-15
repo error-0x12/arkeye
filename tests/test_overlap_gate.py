@@ -47,7 +47,7 @@ def test_local_split_only_runs_when_existing_tracks_overlap() -> None:
     assert classifier.locate.call_count == 1
 
 
-def test_normal_match_is_smoothed_but_reacquire_is_exact() -> None:
+def test_normal_match_is_smoothed_but_impossible_reacquire_is_rejected() -> None:
     from arkeye.detector import Detection
     from arkeye.slot_tracking import StageSlotTracker
 
@@ -68,4 +68,5 @@ def test_normal_match_is_smoothed_but_reacquire_is_exact() -> None:
     tracker.update((), 0.2)
     tracker.update((), 0.3)
     reacquired = tracker.update((detection(1200),), 0.4)[0]
-    assert reacquired.foot_point[0] == 1200.0
+    assert reacquired.status == "lost"
+    assert reacquired.foot_point[0] == 1465.0

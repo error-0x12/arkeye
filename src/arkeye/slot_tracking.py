@@ -63,6 +63,8 @@ class StageSlotTracker(MultiObjectTracker):
         self.game_speed = 1
         self.time_scale = 1.0
         self._stage_elapsed = 0.0
+        # 可选：拒绝新建轨迹时把原因告诉上层，便于逐帧溯源
+        self.trace_hook = None
         self._activated_counts: dict[str, int] = defaultdict(int)
         self._class_votes: dict[int, Counter[str]] = defaultdict(Counter)
         self._created_at: dict[int, float] = {}
@@ -122,19 +124,35 @@ class StageSlotTracker(MultiObjectTracker):
     def _spawn_score(self, enemy_id: str, timestamp: float, foot_point: tuple[float, float], visual_confidence: float) -> float:
         return 0.501 * self._spawn_stage_score(enemy_id, timestamp, foot_point) + 0.499 * visual_confidence
 
+    def _refuse(self, detection: Detection, reason: str, track_id: int | None = None) -> None:
+        """Report a refusal, or an occlusion-support assignment, to the caller."""
+
+        if self.trace_hook is not None:
+            self.trace_hook(detection, reason, track_id)
+
     def _activate(self, detection: Detection, timestamp: float, status: str = "confirmed") -> _Track | None:
         enemy_id = self._class_at(detection.enemy_id, timestamp)
         if enemy_id not in {"unknown", "friendly"} and not self._class_allowed_time(enemy_id, timestamp):
             enemy_id = "unknown"
         if not self._class_allowed_at(enemy_id, detection.foot_point):
+            self._refuse(detection, f"脚下不在 {enemy_id} 允许的出怪区域")
             return None
         if enemy_id == "friendly":
             if self._activated_counts[enemy_id] >= self.friendly_limit:
+                self._refuse(detection, f"我方干员上限 {self.friendly_limit} 已满")
                 return None
         elif enemy_id == "unknown":
             if self._activated_counts[enemy_id] >= self.unknown_budget:
+                self._refuse(detection, f"未识别目标预算 {self.unknown_budget} 已用尽")
                 return None
-        elif enemy_id not in self.expected_counts or self._activated_counts[enemy_id] >= self.expected_counts[enemy_id]:
+        elif enemy_id not in self.expected_counts:
+            self._refuse(detection, f"{enemy_id} 不在本关计划出怪列表里")
+            return None
+        elif self._activated_counts[enemy_id] >= self.expected_counts[enemy_id]:
+            self._refuse(
+                detection,
+                f"{enemy_id} 的计划数量 {self.expected_counts[enemy_id]} 已全部激活",
+            )
             return None
         track = super()._new_track(detection, timestamp)
         confirmed_now = enemy_id == "unknown" or self.class_confirmation_by_id.get(enemy_id, self.class_confirmation_hits) <= 1
@@ -175,17 +193,25 @@ class StageSlotTracker(MultiObjectTracker):
     def _correct(self, track: _Track, detection: Detection, timestamp: float, status: str = "confirmed") -> None:
         previous_position = self._position(track).copy()
         previous_bbox = track.bbox
-        track.kalman.statePre = track.kalman.statePost.copy()
-        track.kalman.correct(np.asarray(detection.foot_point, dtype=np.float32).reshape(2, 1))
-        if status == "confirmed" and track.misses <= 1 and track.hits > 0:
-            track.kalman.statePost[:2, 0] = previous_position * 0.65 + np.asarray(detection.foot_point) * 0.35
-            track.bbox = tuple(round(previous * 0.65 + current * 0.35) for previous, current in zip(previous_bbox, detection.bbox, strict=True))
-        else:
-            track.kalman.statePost[:2, 0] = detection.foot_point
-            track.bbox = previous_bbox if status == "occluded" else detection.bbox
-        delta_time = max(1e-3, timestamp - track.history[-1][0]) if track.history else 1.0 / 30.0
-        measured_velocity = (np.asarray(detection.foot_point) - previous_position) / delta_time
-        track.kalman.statePost[2:4, 0] = measured_velocity.astype(np.float32)
+        if status != "occluded":
+            track.kalman.statePre = track.kalman.statePost.copy()
+            track.kalman.correct(np.asarray(detection.foot_point, dtype=np.float32).reshape(2, 1))
+            if status == "confirmed" and track.misses <= 1 and track.hits > 0:
+                track.kalman.statePost[:2, 0] = previous_position * 0.65 + np.asarray(detection.foot_point) * 0.35
+                track.bbox = tuple(
+                    round(previous * 0.65 + current * 0.35)
+                    for previous, current in zip(previous_bbox, detection.bbox, strict=True)
+                )
+            else:
+                track.kalman.statePost[:2, 0] = detection.foot_point
+                track.bbox = detection.bbox
+            delta_time = max(1e-3, timestamp - track.history[-1][0]) if track.history else 1.0 / 30.0
+            measured_velocity = (np.asarray(detection.foot_point) - previous_position) / delta_time
+            speed = float(np.linalg.norm(measured_velocity))
+            speed_limit = self.max_speed * self.time_scale
+            if speed > speed_limit:
+                measured_velocity *= speed_limit / speed
+            track.kalman.statePost[2:4, 0] = measured_velocity.astype(np.float32)
         self._vote_class(track, detection.enemy_id, timestamp, detection.confidence)
         if detection.enemy_id == "unknown" and detection.possible_friendly:
             self._vote_class(track, "friendly", timestamp, detection.confidence)
@@ -213,7 +239,7 @@ class StageSlotTracker(MultiObjectTracker):
             end = max(timestamp, self.battle_origin_timestamp)
             self._stage_elapsed += max(0.0, end - start) * self.time_scale
         self._last_update_timestamp = timestamp
-        motion_gate = max(12.0, self.max_speed * delta_time)
+        motion_gate = max(12.0, self.max_speed * delta_time * self.time_scale)
         tracks = list(self._tracks.values())
         for track in tracks:
             track.age += 1
@@ -221,7 +247,7 @@ class StageSlotTracker(MultiObjectTracker):
 
         matched: dict[int, Detection] = {}
         matched_detection_indices: set[int] = set()
-        speed_rejected: set[int] = set()
+        speed_rejected_pairs: set[tuple[int, int]] = set()
         if tracks and detections:
             costs = np.full((len(tracks), len(detections)), _INVALID)
             for row, track in enumerate(tracks):
@@ -240,9 +266,9 @@ class StageSlotTracker(MultiObjectTracker):
                         continue
                     distance = self._distance(track, detection)
                     gate = 300.0
-                    if track.misses <= 1 and distance <= gate and distance > motion_gate:
-                        speed_rejected.add(column)
-                    if distance <= gate and (track.misses > 1 or distance <= motion_gate):
+                    if distance <= gate and distance > motion_gate:
+                        speed_rejected_pairs.add((track.track_id, column))
+                    if distance <= gate and distance <= motion_gate:
                         costs[row, column] = distance
             rows, columns = linear_sum_assignment(costs)
             for row, column in zip(rows, columns, strict=True):
@@ -253,11 +279,13 @@ class StageSlotTracker(MultiObjectTracker):
                 matched_detection_indices.add(column)
                 self._correct(track, detections[column], timestamp)
 
+        speed_rejected_detections = {column for _, column in speed_rejected_pairs}
         for detection_index, detection in enumerate(detections):
-            if detection_index in matched_detection_indices or detection_index in speed_rejected:
+            if detection_index in matched_detection_indices or detection_index in speed_rejected_detections:
                 continue
             if any(
                 track.misses > 0
+                and (track.track_id, detection_index) not in speed_rejected_pairs
                 and (track.enemy_id == "unknown" or detection.enemy_id == "unknown" or track.enemy_id == detection.enemy_id)
                 and self._distance(track, detection) <= 300
                 and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))
@@ -275,8 +303,6 @@ class StageSlotTracker(MultiObjectTracker):
 
         # A merged blob may cover existing tracks, but never manufactures a new one from area.
         for detection_index, detection in enumerate(detections):
-            if detection_index in speed_rejected and detection_index not in matched_detection_indices:
-                continue
             assigned = [track for track in self._tracks.values() if track.bbox == detection.bbox and track.misses == 0]
             if any(track.enemy_id == "unknown" and track.hits < self.class_confirmation_hits for track in assigned):
                 continue
@@ -287,6 +313,7 @@ class StageSlotTracker(MultiObjectTracker):
                 track
                 for track in self._tracks.values()
                 if track.misses > 0
+                and (track.track_id, detection_index) not in speed_rejected_pairs
                 and self._distance(track, detection) <= 300
                 and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))
             ]
@@ -298,6 +325,11 @@ class StageSlotTracker(MultiObjectTracker):
             if needed <= 0:
                 continue
             for track in candidates[:needed]:
+                self._refuse(
+                    detection,
+                    "该检测的框同时覆盖这条轨迹的预测位置，按重叠支撑处理（不新建轨迹）",
+                    track.track_id,
+                )
                 self._correct(track, detection, timestamp, status="occluded")
                 needed -= 1
 
