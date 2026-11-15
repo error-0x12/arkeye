@@ -49,6 +49,15 @@ class RouteSpeedFilter:
     # 处于丢失（HELD）状态的轨迹重新接回检测时要额外付出的匹配代价（乘以门限）。
     # 没有这一项时纯距离代价会让 HELD 轨迹把本该属于已确认目标的新检测抢走。
     RECAPTURE_COST_PENALTY = 0.35
+    # HELD 轨迹抢检测的额外代价上限（随丢失帧数线性增长到 0.5 倍门限）
+    CLASS_GRACE_FRAMES = 10
+    # 轨迹自身主流类别达到这么多票时，视为身份已稳定
+    DOMINANT_CLASS_VOTES = 4
+    # HELD 超过这么多帧（30 fps 下约 1 秒）还没被重新拉起就冻结：
+    # 未识别轨迹按这个窗直接锁死；已经确认的敌人再放宽 4 倍（约 4 秒），
+    # 否则同一个敌人掉检一秒就会被拆成两个 ID。
+    HELD_LOCK_FRAMES = 30
+    KNOWN_CLASS_LOCK_FACTOR = 4
     # 允许出怪口附近的未识别驻场目标保留的内部匹配次数；
     # 真实敌人出怪后会立刻移动，超过该次数仍静止的无血条目标按干扰处理。
     STATIONARY_GRACE_MATCHES = 30
@@ -108,7 +117,7 @@ class RouteSpeedFilter:
 
     def _on_slot_refusal(
         self,
-        detection: Detection,
+        detection: Detection | None,
         reason: str,
         track_id: int | None = None,
         kind: str | None = None,
@@ -118,7 +127,9 @@ class RouteSpeedFilter:
         if self._trace_frame is None:
             return
         group = kind or ("occluded_support" if track_id is not None else "budget_rejected")
-        item: dict[str, Any] = {"reason": reason, "detection": self._trace_detection(detection)}
+        item: dict[str, Any] = {"reason": reason}
+        if detection is not None:
+            item["detection"] = self._trace_detection(detection)
         if track_id is not None:
             item["track_id"] = track_id
         self._trace_frame.setdefault(group, []).append(item)
@@ -365,9 +376,20 @@ class RouteSpeedFilter:
             "candidate": detection.candidate_enemy_id,
         }
 
+    def _is_locked(self, track: _MotionTrack) -> bool:
+        """冻结：丢失太久，不再参与任何关联。"""
+
+        if track.misses <= self.HELD_LOCK_FRAMES:
+            return False
+        if track.detection.enemy_id == "unknown":
+            return True
+        return track.misses > self.HELD_LOCK_FRAMES * self.KNOWN_CLASS_LOCK_FACTOR
+
     def _adoption_allowed(self, track: _MotionTrack, detection: Detection) -> bool:
         """A long-lost track may not silently adopt an unrelated re-detection."""
 
+        if self._is_locked(track):
+            return False
         if track.misses < 4:
             return True
         previous = track.detection
@@ -392,7 +414,7 @@ class RouteSpeedFilter:
         if tracks and detections:
             costs = np.full((len(tracks), len(detections)), _INVALID)
             for row, track in enumerate(tracks):
-                if track.guide:
+                if track.guide or self._is_locked(track):
                     continue
                 delta_time = max(1e-3, timestamp - track.timestamp)
                 # A long occlusion must not turn into an unbounded cross-board jump.
@@ -406,11 +428,15 @@ class RouteSpeedFilter:
                     distance = self._distance(track.detection, detection)
                     if distance <= gate:
                         # 本帧开头刚把 misses 加过 1，>1 才代表上一帧之前就已经丢失
-                        lost_before = track.misses > 1
+                        recapture = 0.0
+                        if track.misses > 1:
+                            # 丢失越久代价越高：HELD 轨迹不能把同一个检测从仍在跟的轨迹手里抢走
+                            weight = min(1.0, (track.misses - 1) / self.CLASS_GRACE_FRAMES)
+                            recapture = gate * (self.RECAPTURE_COST_PENALTY + weight * 0.5)
                         route_score = 1.0 if path_scores is None else path_scores.get(id(detection), 1.0)
                         costs[row, column] = (
                             distance
-                            + (gate * self.RECAPTURE_COST_PENALTY if lost_before else 0.0)
+                            + recapture
                             + (1.0 - route_score) * gate * self.PATH_COST_WEIGHT
                         )
             rows, columns = linear_sum_assignment(costs)
@@ -613,7 +639,13 @@ class RouteSpeedFilter:
         recognized = [cls for cls in track.class_history() if cls not in {"unknown", "friendly"}]
         if len(recognized) < 2:
             return True
-        return recognized.count(current) * 2 > len(recognized)
+        if recognized.count(current) * 2 > len(recognized):
+            return True
+        # 当前这一帧的类别只是少数派：如果轨迹自己已经有大比数的主流类别，
+        # 说明是这一帧的分类飘了（Boss 被认成源石虫很常见），不能反过来把整帧丢掉。
+        dominant = max(set(recognized), key=recognized.count)
+        dominant_count = recognized.count(dominant)
+        return dominant_count >= self.DOMINANT_CLASS_VOTES and dominant_count * 3 >= len(recognized) * 2
 
     def _minimum_hits(self, track: _MotionTrack) -> int:
         if (

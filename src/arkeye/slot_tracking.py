@@ -37,6 +37,8 @@ class StageSlotTracker(MultiObjectTracker):
         spawn_time_tolerance: float = 2.0,
         spawn_score_threshold: float = 0.75,
         confirmed_grace_frames: int = 10,
+        max_missing_frames: int = 150,
+        held_lock_frames: int = 30,
         **tracker_options,
     ) -> None:
         if max_speed <= 0 or friendly_limit < 1 or class_confirmation_hits < 1:
@@ -64,6 +66,12 @@ class StageSlotTracker(MultiObjectTracker):
         # 已确认/重叠支撑的轨迹刚丢失时，先保持状态这么多帧再翻成 HELD。
         # 技能特效覆盖目标通常只有几帧到小半秒，直接翻 HELD 会造成抖动。
         self.confirmed_grace_frames = max(0, confirmed_grace_frames)
+        # 连续这么多帧一个观测都没有的轨迹直接删除。以前只标记 lost、永不删除，
+        # 一次误检就能留下一条活到片尾的「幽灵」，既占配额又污染统计。
+        self.max_missing_frames = max(1, max_missing_frames)
+        # 连续丢失超过这么多帧就冻结：不再参与关联、不再被补支撑，
+        # 防止 HELD 轨迹在目标走了之后还把别人的检测抢走。
+        self.held_lock_frames = max(0, held_lock_frames)
         self.game_speed = 1
         self.time_scale = 1.0
         self._stage_elapsed = 0.0
@@ -130,7 +138,7 @@ class StageSlotTracker(MultiObjectTracker):
 
     def _refuse(
         self,
-        detection: Detection,
+        detection: Detection | None,
         reason: str,
         track_id: int | None = None,
         kind: str | None = None,
@@ -198,6 +206,8 @@ class StageSlotTracker(MultiObjectTracker):
 
     # 丢失轨迹重新接回检测的代价系数（乘以当帧运动门限）
     REACQUIRE_COST_WEIGHT = 0.6
+    # 已确认类别的冻结窗口是未识别的这么多倍，避免同一敌人被拆成多条轨迹
+    KNOWN_CLASS_LOCK_FACTOR = 4
 
     @staticmethod
     def _covers(track: _Track, detection: Detection, margin_ratio: float = 0.08) -> bool:
@@ -219,6 +229,32 @@ class StageSlotTracker(MultiObjectTracker):
     @staticmethod
     def _distance(track: _Track, detection: Detection) -> float:
         return float(np.linalg.norm(StageSlotTracker._position(track) - np.asarray(detection.foot_point)))
+
+    def _is_locked(self, track: _Track) -> bool:
+        """冻结判定：未识别轨迹按 held_lock_frames，已确认敌人放宽 4 倍。"""
+
+        if track.misses <= self.held_lock_frames:
+            return False
+        if track.enemy_id == "unknown":
+            return True
+        return track.misses > self.held_lock_frames * self.KNOWN_CLASS_LOCK_FACTOR
+
+    def _drop_stale_tracks(self) -> None:
+        """删除连续 `max_missing_frames` 帧没有任何观测的轨迹，并归还配额。"""
+
+        for track in list(self._tracks.values()):
+            if track.misses <= self.max_missing_frames:
+                continue
+            self._tracks.pop(track.track_id, None)
+            self._activated_counts[track.enemy_id] = max(0, self._activated_counts[track.enemy_id] - 1)
+            self._created_at.pop(track.track_id, None)
+            self._refuse(
+                None,
+                f"连续 {track.misses} 帧没有任何观测，删除轨迹 #{track.track_id}"
+                f"（类别 {track.enemy_id}，累计命中 {track.hits}）",
+                track.track_id,
+                "stale_removed",
+            )
 
     def _correct(self, track: _Track, detection: Detection, timestamp: float, status: str = "confirmed") -> None:
         previous_position = self._position(track).copy()
@@ -282,6 +318,8 @@ class StageSlotTracker(MultiObjectTracker):
         if tracks and detections:
             costs = np.full((len(tracks), len(detections)), _INVALID)
             for row, track in enumerate(tracks):
+                if self._is_locked(track):
+                    continue
                 for column, detection in enumerate(detections):
                     if track.enemy_id == "friendly" and detection.faction_evidence == "enemy":
                         continue
@@ -347,6 +385,7 @@ class StageSlotTracker(MultiObjectTracker):
                     track
                     for track in self._tracks.values()
                     if track.misses > 0
+                    and not self._is_locked(track)
                     and (track.track_id, detection_index) not in speed_rejected_pairs
                     and (
                         track.enemy_id == "unknown"
@@ -375,6 +414,7 @@ class StageSlotTracker(MultiObjectTracker):
                 continue
             self._activate(detection, timestamp)
 
+        self._drop_stale_tracks()
         matched_ids = set(matched)
         for track in tracks:
             if track.track_id in matched_ids:
@@ -399,7 +439,9 @@ class StageSlotTracker(MultiObjectTracker):
             candidates = [
                 track
                 for track in self._tracks.values()
+                # 冻结的轨迹不再接受任何支撑补入
                 if track.misses > 0
+                and not self._is_locked(track)
                 and (track.track_id, detection_index) not in speed_rejected_pairs
                 and self._covers(track, detection)
                 and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))

@@ -327,3 +327,60 @@ def test_new_identity_rejections_are_logged_instead_of_swallowed() -> None:
     assert "id_blocked" in kinds, kinds
     reason = next(event[2] for event in events if event[0] == "id_blocked")
     assert "丢失" in reason
+
+
+def test_unknown_held_track_is_locked_after_one_second() -> None:
+    """未识别轨迹丢失满 held_lock_frames 就冻结：不参与关联，也不阻挡新身份。"""
+
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 2},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        typical_bbox_areas={"enemy_1007_slime": 20_000},
+        held_lock_frames=30,
+    )
+    unknown_first = Detection(
+        bbox=(1300, 450, 200, 100),
+        foot_point=(1400.0, 500.0),
+        enemy_id="unknown",
+        confidence=0.5,
+        template_name=None,
+    )
+    first = tracker.update((unknown_first,), 0.0)
+    locked_id = first[0].track_id
+
+    for step in range(1, tracker.held_lock_frames + 3):
+        tracker.update((), step / 30)
+
+    snapshots = tracker.update((blob(1400),), (tracker.held_lock_frames + 4) / 30)
+    locked = next((s for s in snapshots if s.track_id == locked_id), None)
+    assert locked is not None, "还没到删除阈值，旧轨迹应当仍然存在"
+    assert locked.misses > tracker.held_lock_frames
+    assert locked.foot_point == (1400.0, 500.0), "冻结后位置不能再被更新"
+
+    fresh = [s for s in snapshots if s.track_id != locked_id and s.misses == 0]
+    assert fresh, "冻结轨迹不该挡住新身份接手这个位置"
+
+
+def test_known_class_held_track_keeps_a_longer_reacquisition_window() -> None:
+    """已确认敌人不能一掉检就换 ID，冻结窗口要放宽。"""
+
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 2},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        typical_bbox_areas={"enemy_1007_slime": 20_000},
+        held_lock_frames=20,
+    )
+    first = tracker.update((blob(1400),), 0.0)
+    track_id = first[0].track_id
+
+    # 超过基础窗口但没到 4 倍窗口：不该冻结
+    for step in range(1, tracker.held_lock_frames * 3):
+        tracker.update((), step / 30)
+    assert not tracker._is_locked(tracker._tracks[track_id])
+
+    # 继续丢到 4 倍窗口之外：冻结
+    for step in range(tracker.held_lock_frames * 3, tracker.held_lock_frames * 5):
+        tracker.update((), step / 30)
+    assert tracker._is_locked(tracker._tracks[track_id])

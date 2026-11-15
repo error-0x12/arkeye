@@ -537,3 +537,69 @@ def test_candidate_before_route_wakes_up_is_dropped_with_a_readable_reason() -> 
     dropped = [item for frame in frames for item in frame.get("off_path_dropped", [])]
     assert dropped
     assert "出怪时间" in dropped[0]["reason"]
+
+
+def test_stable_track_survives_a_single_class_flip() -> None:
+    """Boss 被单帧认成源石虫时，不能整帧丢掉观测。"""
+
+    def classed(x: float, enemy_id: str) -> Detection:
+        return Detection(
+            bbox=(round(x - 30), 460, 60, 80),
+            foot_point=(x, 500),
+            enemy_id=enemy_id,
+            confidence=0.9,
+            template_name="test",
+        )
+
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1502_crowns": 1},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+    )
+    route = np.asarray([[1700, 500], [600, 500]], dtype=np.int32)
+    motion = RouteSpeedFilter(tracker, (route,), frame_diagonal=2000.0, pixels_per_tile=100.0)
+    snapshots: tuple = ()
+    for index in range(8):
+        snapshots = motion.update((classed(1500, "enemy_1502_crowns"),), index / 30)
+    assert snapshots and snapshots[0].enemy_id == "enemy_1502_crowns"
+
+    # 第 9 帧分类飘成源石虫：轨迹自身已经足够多 crowns 票，不该被判成干扰
+    flipped = motion.update((classed(1500, "enemy_1007_slime_2"),), 8 / 30)
+    assert flipped, "身份稳定的轨迹不该因为单帧分类飘移而丢掉观测"
+    assert flipped[0].enemy_id == "enemy_1502_crowns"
+
+
+def test_scattered_class_votes_still_count_as_interference() -> None:
+    """票数分散（没有主流类别）时，原来的干扰判定必须保留。"""
+
+    def classed(x: float, enemy_id: str) -> Detection:
+        return Detection(
+            bbox=(round(x - 30), 460, 60, 80),
+            foot_point=(x, 500),
+            enemy_id=enemy_id,
+            confidence=0.9,
+            template_name="test",
+        )
+
+    motion = filter_with_one_slot()
+    for index, enemy in enumerate(
+        ("enemy_1007_slime_2", "enemy_1000_gopro_2", "enemy_1502_crowns", "enemy_1002_nsabr")
+    ):
+        motion.update((classed(1500, enemy),), index / 30)
+    snapshots = motion.update((classed(1500, "enemy_1005_yokai"),), 4 / 30)
+    assert snapshots == (), "主流类别不足 4 票时，散乱类别仍按干扰丢弃"
+
+
+def test_held_track_does_not_steal_from_a_freshly_matched_track() -> None:
+    """HELD 轨迹离检测更近，也要让位给上一帧还在跟的轨迹。"""
+
+    motion = filter_with_one_slot()
+    motion.update((blob(1400), blob(1520)), 0.0)
+    # 1520 那条持续被跟踪，1400 那条开始丢失
+    for step in range(1, 9):
+        motion.update((blob(1520),), step / 30)
+
+    snapshots = motion.update((blob(1440),), 9 / 30)
+    fresh = [s for s in snapshots if abs(s.foot_point[0] - 1520) < 200]
+    assert fresh, "上一帧还在跟的轨迹应该继续拿到检测"
+    assert abs(fresh[0].foot_point[0] - 1520) < 60, fresh[0].foot_point
