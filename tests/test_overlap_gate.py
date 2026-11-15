@@ -68,5 +68,5 @@ def test_normal_match_is_smoothed_but_impossible_reacquire_is_rejected() -> None
     tracker.update((), 0.2)
     tracker.update((), 0.3)
     reacquired = tracker.update((detection(1200),), 0.4)[0]
-    assert reacquired.status == "lost"
+    assert reacquired.misses >= 1
     assert reacquired.foot_point[0] == 1465.0

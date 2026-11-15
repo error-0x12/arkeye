@@ -71,7 +71,7 @@ def test_stale_motion_track_cannot_jump_beyond_recovery_radius() -> None:
     snapshots = motion.update((distant,), 10.0)
 
     assert len(snapshots) == 1
-    assert snapshots[0].status == "lost"
+    assert snapshots[0].misses >= 1
     assert snapshots[0].foot_point == (1498.0, 539.0)
 
 
@@ -93,6 +93,8 @@ def test_occluded_track_keeps_its_own_bbox() -> None:
     occluded = [track for track in snapshots if track.status == "occluded"]
     assert len(occluded) == 2
     assert all(track.bbox in {first.bbox, second.bbox} for track in occluded)
+    assert {track.foot_point for track in occluded} == {first.foot_point, second.foot_point}
+    assert all(track.velocity == (0.0, 0.0) for track in occluded)
     assert all(track.status == "occluded" for track in snapshots)
 
 

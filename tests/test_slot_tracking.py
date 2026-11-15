@@ -30,8 +30,9 @@ def test_merged_group_never_manufactures_extra_slots() -> None:
     assert spawned[0].enemy_id == "enemy_1007_slime"
     assert spawned[0].foot_point == (1500.0, 500.0)
 
-    lost = tracker.update((), 0.1)
-    assert {track.status for track in lost} == {"lost"}
+    # 保持窗内不会翻 HELD，只体现为「这一帧没有匹配到」
+    held = tracker.update((), 0.1)
+    assert all(track.misses >= 1 for track in held)
 
     reacquired = tracker.update((blob(1200),), 0.2)
     assert len(reacquired) == 1
@@ -51,7 +52,7 @@ def test_speed_limit_rejects_guide_line_jump_without_creating_duplicate() -> Non
     rejected = tracker.update((blob(1300),), 1 / 30)
 
     assert len(rejected) == 1
-    assert rejected[0].status == "lost"
+    assert rejected[0].misses == 1
     assert rejected[0].foot_point == (1500.0, 500.0)
 
     recovered = tracker.update((blob(1490),), 2 / 30)
@@ -72,7 +73,7 @@ def test_speed_rejected_target_does_not_create_a_duplicate_track() -> None:
     snapshots = tracker.update((blob(1300),), 1 / 30)
 
     assert len(snapshots) == 1
-    assert snapshots[0].status == "lost"
+    assert snapshots[0].misses == 1
     assert snapshots[0].foot_point == (1500.0, 500.0)
 
 
@@ -89,7 +90,7 @@ def test_lost_track_cannot_recover_through_an_impossible_speed_jump() -> None:
     snapshots = tracker.update((blob(1300),), 0.2)
     original = next(track for track in snapshots if track.track_id == 1)
 
-    assert original.status == "lost"
+    assert original.misses >= 1
     assert original.foot_point == (1500.0, 500.0)
     assert original.velocity == (0.0, 0.0)
 
@@ -231,3 +232,63 @@ def test_possible_friendly_requires_consistent_votes() -> None:
     assert tracker.update((candidate,), 0.0)[0].enemy_id == "unknown"
     assert tracker.update((candidate,), 0.1)[0].enemy_id == "unknown"
     assert tracker.update((candidate,), 0.2)[0].enemy_id == "friendly"
+
+
+def test_confirmed_track_keeps_its_state_through_a_short_occlusion() -> None:
+    """被特效盖住几帧不该立刻翻 HELD，超过保持窗才翻。"""
+
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 1},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        confirmed_grace_frames=10,
+    )
+    tracker.update((blob(1500),), 0.0)
+
+    for step in range(1, 11):
+        snapshots = tracker.update((), step / 30)
+        assert snapshots[0].status == "confirmed", f"第 {step} 帧不该转 HELD"
+        assert snapshots[0].misses == step
+
+    late = tracker.update((), 11 / 30)
+    assert late[0].status == "lost"
+
+
+def test_occluded_track_also_uses_the_grace_window() -> None:
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 1},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        confirmed_grace_frames=3,
+    )
+    tracker.update((blob(1500),), 0.0)
+    tracker._tracks[1].status = "occluded"
+
+    assert tracker.update((), 1 / 30)[0].status == "occluded"
+    assert tracker.update((), 2 / 30)[0].status == "occluded"
+    assert tracker.update((), 3 / 30)[0].status == "occluded"
+    assert tracker.update((), 4 / 30)[0].status == "lost"
+
+
+def test_lost_track_does_not_steal_a_detection_from_a_confirmed_track() -> None:
+    """HELD 轨迹离得更近也不能抢走已确认目标的检测。"""
+
+    tracker = StageSlotTracker(
+        expected_counts={"enemy_1007_slime": 2},
+        spawn_bbox=(1200, 350, 550, 400),
+        despawn_x=700,
+        max_speed=4000.0,
+        typical_bbox_areas={"enemy_1007_slime": 20_000},
+    )
+    # 两条轨迹：A 在 1400，B 在 1500
+    tracker.update((blob(1400), blob(1500)), 0.0)
+    # 只喂 B，A 开始丢失；连续丢到超过保持窗
+    for step in range(1, 12):
+        tracker.update((blob(1500),), step / 30)
+    # 现在 A 是 lost、B 是 confirmed，检测落在 1440（离 A 40、离 B 60）
+    snapshots = tracker.update((blob(1440),), 12 / 30)
+    by_id = {track.track_id: track for track in snapshots}
+    assert by_id[1].misses >= 1, "HELD 的 A 不该接走这个检测"
+    assert by_id[2].misses == 0, "已确认的 B 应该拿到它"
+    # 已确认轨迹的框/脚点按 65/35 平滑，所以只是往检测方向移动，不会精确落在 1440
+    assert 1440.0 <= by_id[2].foot_point[0] < 1500.0

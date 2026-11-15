@@ -125,7 +125,7 @@ def test_fixed_speed_rejects_later_guide_without_duplicate_target() -> None:
     rejected = motion.update((blob(1300),), 0.10)
 
     assert len(rejected) == 1
-    assert rejected[0].status == "lost"
+    assert rejected[0].misses >= 1
     assert rejected[0].foot_point == (1495.0, 500.0)
 
     motion.update((blob(1495),), 0.12)
@@ -425,11 +425,14 @@ def test_stationary_near_spawn_unknown_becomes_interference_after_grace() -> Non
     track_id = snapshots[0].track_id
     # 但真实敌人出怪后会立即移动；长期驻场的无血条目标按干扰清除
     last: tuple = ()
+    saw_guide = False
     for index in range(2, 2 + motion.STATIONARY_GRACE_MATCHES + 4):
         last = motion.update((unknown_blob(1700),), 30.0 + index / 30)
-    assert motion._tracks[next(iter(motion._tracks))].guide
-    # 干扰被隔离后不再供给检测，旧轨迹只剩惯性预测（显示层会隐藏长期丢失目标）
-    assert all(snapshot.status == "lost" for snapshot in last if snapshot.track_id == track_id)
+        if any(track.guide for track in motion._tracks.values()):
+            saw_guide = True
+    assert saw_guide, "长期驻场的无血条未识别目标必须被判为干扰"
+    # 干扰被隔离后不再供给检测；保持窗内状态仍是 confirmed，但 misses 会开始累积
+    assert all(snapshot.misses >= 1 for snapshot in last if snapshot.track_id == track_id)
 
 
 def test_class_votes_require_strict_majority() -> None:

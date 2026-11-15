@@ -36,6 +36,7 @@ class StageSlotTracker(MultiObjectTracker):
         battle_origin_timestamp: float = 0.0,
         spawn_time_tolerance: float = 2.0,
         spawn_score_threshold: float = 0.75,
+        confirmed_grace_frames: int = 10,
         **tracker_options,
     ) -> None:
         if max_speed <= 0 or friendly_limit < 1 or class_confirmation_hits < 1:
@@ -60,6 +61,9 @@ class StageSlotTracker(MultiObjectTracker):
         self.battle_origin_timestamp = battle_origin_timestamp
         self.spawn_time_tolerance = spawn_time_tolerance
         self.spawn_score_threshold = spawn_score_threshold
+        # 已确认/重叠支撑的轨迹刚丢失时，先保持状态这么多帧再翻成 HELD。
+        # 技能特效覆盖目标通常只有几帧到小半秒，直接翻 HELD 会造成抖动。
+        self.confirmed_grace_frames = max(0, confirmed_grace_frames)
         self.game_speed = 1
         self.time_scale = 1.0
         self._stage_elapsed = 0.0
@@ -186,6 +190,9 @@ class StageSlotTracker(MultiObjectTracker):
         self._activated_counts[candidate] += 1
         track.enemy_id = candidate
 
+    # 丢失轨迹重新接回检测的代价系数（乘以当帧运动门限）
+    REACQUIRE_COST_WEIGHT = 0.6
+
     @staticmethod
     def _distance(track: _Track, detection: Detection) -> float:
         return float(np.linalg.norm(StageSlotTracker._position(track) - np.asarray(detection.foot_point)))
@@ -247,6 +254,7 @@ class StageSlotTracker(MultiObjectTracker):
 
         matched: dict[int, Detection] = {}
         matched_detection_indices: set[int] = set()
+        matched_by_detection: dict[int, list[int]] = {}
         speed_rejected_pairs: set[tuple[int, int]] = set()
         if tracks and detections:
             costs = np.full((len(tracks), len(detections)), _INVALID)
@@ -269,7 +277,13 @@ class StageSlotTracker(MultiObjectTracker):
                     if distance <= gate and distance > motion_gate:
                         speed_rejected_pairs.add((track.track_id, column))
                     if distance <= gate and distance <= motion_gate:
-                        costs[row, column] = distance
+                        # 丢失中的轨迹（含刚丢失、仍处于保持窗的）要额外付代价：
+                        # 同一个检测必须优先归仍在跟的目标，HELD 不能把它抢走。
+                        penalty = 0.0
+                        if track.misses > 0:
+                            weight = min(1.0, track.misses / max(1, self.confirmed_grace_frames))
+                            penalty = weight * motion_gate * self.REACQUIRE_COST_WEIGHT
+                        costs[row, column] = distance + penalty
             rows, columns = linear_sum_assignment(costs)
             for row, column in zip(rows, columns, strict=True):
                 if costs[row, column] >= _INVALID:
@@ -277,6 +291,7 @@ class StageSlotTracker(MultiObjectTracker):
                 track = tracks[row]
                 matched[track.track_id] = detections[column]
                 matched_detection_indices.add(column)
+                matched_by_detection.setdefault(column, []).append(track.track_id)
                 self._correct(track, detections[column], timestamp)
 
         speed_rejected_detections = {column for _, column in speed_rejected_pairs}
@@ -296,14 +311,20 @@ class StageSlotTracker(MultiObjectTracker):
 
         matched_ids = set(matched)
         for track in tracks:
-            if track.track_id not in matched_ids:
+            if track.track_id in matched_ids:
+                continue
+            # 抖动消抖：刚丢失的前 N 帧保持原状态（confirmed/occluded），
+            # 期间重新匹配上就不会留下 HELD 痕迹；超过 N 帧才真正转 lost。
+            if track.status in {"confirmed", "occluded"} and track.misses <= self.confirmed_grace_frames:
+                pass
+            else:
                 track.status = "lost"
-                x, y = self._position(track)
-                track.history.append((timestamp, float(x), float(y)))
+            x, y = self._position(track)
+            track.history.append((timestamp, float(x), float(y)))
 
         # A merged blob may cover existing tracks, but never manufactures a new one from area.
         for detection_index, detection in enumerate(detections):
-            assigned = [track for track in self._tracks.values() if track.bbox == detection.bbox and track.misses == 0]
+            assigned = [self._tracks[tid] for tid in matched_by_detection.get(detection_index, [])]
             if any(track.enemy_id == "unknown" and track.hits < self.class_confirmation_hits for track in assigned):
                 continue
             typical_area = self.typical_bbox_areas.get(detection.enemy_id, 10_000.0)
@@ -318,7 +339,9 @@ class StageSlotTracker(MultiObjectTracker):
                 and not (track.misses > 10 and self._in_spawn_region(detection) and not self._track_in_spawn_region(track))
             ]
             candidates.sort(key=lambda track: self._distance(track, detection))
-            group_size = max(group_size, min(3, len(assigned) + len(candidates)))
+            # 候选数量不得反过来把 group_size 撑大：那样任何 300 px 内的丢失轨迹
+            # 都能分到别人的检测，misses 被清零，HELD 轨迹就能一直占着已确认目标的观测。
+            # group_size 只由「这块前景比典型目标大多少」决定。
             if detection.enemy_id == "unknown" and not assigned and not candidates:
                 group_size = 1
             needed = group_size - len(assigned)
