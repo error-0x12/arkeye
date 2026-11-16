@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,15 @@ def read_stable_video_background_frame(
     end_timestamp: float = 20.0,
     sample_interval: float = 0.5,
 ) -> Frame:
-    """Choose a low-motion battle frame after the intro instead of assuming a fixed empty-board time."""
+    """Choose a background frame with no unit on the board.
+
+    A background that contains a deployed operator or a standing enemy makes that
+    unit permanently invisible to background subtraction. So the sample is the
+    per-pixel median of the frames around the chosen moment: anything that moves
+    is removed, only fixed scenery survives. It is then cross-checked against
+    candidate frames far from that moment and falls back to the median when the
+    difference shows something on the board.
+    """
 
     if start_timestamp < 0 or end_timestamp <= start_timestamp or sample_interval <= 0:
         raise ValueError("Invalid stable-background time range")
@@ -83,7 +91,72 @@ def read_stable_video_background_frame(
         if differences:
             scored.append((float(np.mean(differences)), frame.timestamp, index))
     selected = min(scored)[2] if scored else 0
-    return samples[selected][0]
+    anchor = samples[selected][0]
+    prepared = read_empty_video_background(path, anchor.timestamp)
+    chosen, data = _cross_check_empty_frame(samples, prepared)
+    return Frame(timestamp=chosen.timestamp, index=chosen.index, data=data)
+
+
+def read_empty_video_background(path: str, timestamp: float, window: int = 15) -> np.ndarray:
+    """按时间中位数合成空场背景。
+
+    单帧背景会把当时在场的单位一起拍进去，那个单位此后永远不会被前景差分
+    检出。取目标时刻前后 `window` 帧的逐像素中位数，会移动的东西都被抹掉。
+    """
+
+    frames: list[np.ndarray] = []
+    with VideoSource(path) as source:
+        for frame in source:
+            if frame.timestamp < timestamp - window / 30.0:
+                continue
+            if frame.timestamp > timestamp + window / 30.0:
+                break
+            frames.append(frame.data)
+    if not frames:
+        raise ValueError(f"Video has no frames around {timestamp} for a background sample")
+    return _median_background(frames)
+
+
+def _median_background(frames: list[np.ndarray]) -> np.ndarray:
+    """逐像素取中位数。只在部分帧出现的物体（单位、技能特效）会被抹掉。"""
+
+    stack = np.stack(frames, axis=0)
+    return np.median(stack, axis=0).astype(np.uint8)
+
+
+def _cross_check_empty_frame(
+    samples: Sequence[tuple[Frame, np.ndarray, bool]],
+    prepared: np.ndarray,
+    *,
+    empty_diff_threshold: float = 1.5,
+) -> tuple[Frame, np.ndarray]:
+    """交叉验证候选帧和预制背景：差分为空就用这一帧，否则用预制背景。
+
+    只靠血条判断「场上有没有目标」并不可靠（地图色块会被当成条）。这里直接量
+    候选帧和干净底板的差异：差异足够小说明场上没有单位，采用那一帧；差异大说明
+    画面里有东西，回退到中位数背景，避免把单位拍进背景。
+    """
+
+    border = prepared.shape[0] // 20
+    anchor_timestamp = samples[0][0].timestamp if samples else 0.0
+    best: tuple[float, int] | None = None
+    for index, (frame, _thumb, pause_visible) in enumerate(samples):
+        if not pause_visible:
+            continue
+        # 预制背景由采样时刻附近的帧合成，候选必须拉开距离才算交叉验证
+        if len(samples) > 3 and abs(frame.timestamp - anchor_timestamp) < 1.0:
+            continue
+        region = slice(border, prepared.shape[0] - prepared.shape[0] // 5)
+        difference = float(np.mean(cv2.absdiff(frame.data[region], prepared[region])))
+        if best is None or difference < best[0]:
+            best = (difference, index)
+
+    if best is None:
+        return samples[0][0], prepared
+    difference, index = best
+    if difference <= empty_diff_threshold:
+        return samples[index][0], samples[index][0].data.copy()
+    return samples[index][0], prepared
 
 
 def read_stable_video_background(path: str, start_timestamp: float = 8.0) -> np.ndarray:
