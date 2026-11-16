@@ -327,9 +327,20 @@ def test_stage_route_and_time_resolve_visual_ambiguity() -> None:
     # 长时间的“消失后再出现”不再沿用旧轨迹身份（那是干扰目标的典型特征）。
     snapshots: tuple = ()
     timestamp = 9.0 + 1 / 30
+    step = 0
     while timestamp < 39.0:
         timestamp += 1 / 30
-        snapshots = motion.update((candidate,), timestamp)
+        step += 1
+        # 目标沿路线缓慢前进，否则会被静态装饰规则正确识别成「不动的贴图」
+        moving = Detection(
+            (1500 - step - 30, 460, 60, 80),
+            (1500.0 - step, 500.0),
+            "unknown",
+            0.59,
+            None,
+            candidate_enemy_id="enemy_1007_slime",
+        )
+        snapshots = motion.update((moving,), timestamp)
     assert snapshots[0].enemy_id == "enemy_1007_slime"
 
 
@@ -603,3 +614,41 @@ def test_held_track_does_not_steal_from_a_freshly_matched_track() -> None:
     fresh = [s for s in snapshots if abs(s.foot_point[0] - 1520) < 200]
     assert fresh, "上一帧还在跟的轨迹应该继续拿到检测"
     assert abs(fresh[0].foot_point[0] - 1520) < 60, fresh[0].foot_point
+
+
+def test_static_map_decoration_is_rejected_as_interference() -> None:
+    """固定位置反复出现、脚点不抖、没有血条的静态前景不能当成作战单位。"""
+
+    motion = filter_with_one_slot()
+    # 同一处反复出现的静态前景（帧间只抖 1 px），速度恒为 0
+    snapshots: tuple = ()
+    saw_guide = False
+    # 多跑 20 帧，越过「已确认保持窗」再确认它确实不再被刷新
+    for index in range(motion.STATIC_INTERFERENCE_MATCHES + 20):
+        jitter = 1 if index % 2 else 0
+        still = Detection(
+            bbox=(1370 + jitter, 460, 60, 80),
+            foot_point=(1500.0 + jitter, 500.0),
+            enemy_id="unknown",
+            confidence=0.5,
+            template_name=None,
+        )
+        snapshots = motion.update((still,), index / 30)
+        if any(track.guide for track in motion._tracks.values()):
+            saw_guide = True
+
+    # 被判干扰的内部轨迹会退出关联，同一块前景可能重新开一条轨迹，
+    # 所以这里看「过程中有没有判定为干扰」，而不是结束时还剩哪条
+    assert saw_guide, "静态地图装饰应当被判为干扰"
+    # 槽位层那条轨迹还在，但不能再被刷新成已确认
+    assert all(snapshot.status != "confirmed" for snapshot in snapshots)
+
+
+def test_moving_target_is_not_mistaken_for_static_decoration() -> None:
+    motion = filter_with_one_slot()
+    snapshots: tuple = ()
+    for index in range(motion.STATIC_INTERFERENCE_MATCHES + 4):
+        snapshots = motion.update((blob(1500 - index * 4),), index / 30)
+
+    assert snapshots, "持续移动的目标不该被判成静态装饰"
+    assert not any(track.guide for track in motion._tracks.values())

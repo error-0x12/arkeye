@@ -31,6 +31,7 @@ class _MotionTrack:
     classes: deque[str] = field(default_factory=lambda: deque(maxlen=6))
     consecutive: int = 1
     stationary_hits: int = 0
+    feet: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=60))
 
     def class_history(self) -> deque[str]:
         """Class votes across recent matches (lazy for checkpoints saved before this field)."""
@@ -61,6 +62,12 @@ class RouteSpeedFilter:
     # 允许出怪口附近的未识别驻场目标保留的内部匹配次数；
     # 真实敌人出怪后会立刻移动，超过该次数仍静止的无血条目标按干扰处理。
     STATIONARY_GRACE_MATCHES = 30
+    # 固定位置反复出现、脚点抖动不超过这么多像素、且没有血条的前景，
+    # 连续匹配这么多次就判定为静态地图装饰（不是作战单位）。
+    STATIC_INTERFERENCE_MATCHES = 60
+    STATIC_INTERFERENCE_SPREAD = 8.0
+    # 登记静态区域时，在目标尺寸之外再放宽这么多像素
+    STATIC_REGION_PADDING = 12.0
 
     def __init__(
         self,
@@ -469,6 +476,9 @@ class RouteSpeedFilter:
                     track.stationary_hits = 0
                 track.path_hits.append(self._on_path(detection))
                 track.class_history().append(detection.enemy_id)
+                self._feet(track).append(
+                    (float(detection.foot_point[0]), float(detection.foot_point[1]))
+                )
                 track.consecutive = getattr(track, "consecutive", 0) + 1
                 track.detection = detection
                 track.timestamp = timestamp
@@ -554,6 +564,7 @@ class RouteSpeedFilter:
             track = _MotionTrack(self._next_id, detection, timestamp)
             track.path_hits.append(self._on_path(detection))
             track.class_history().append(detection.enemy_id)
+            self._feet(track).append((float(detection.foot_point[0]), float(detection.foot_point[1])))
             self._tracks[self._next_id] = track
             self._next_id += 1
             if self._trace_frame is not None:
@@ -570,6 +581,63 @@ class RouteSpeedFilter:
         else:
             visual_motion_score = min(1.0, self.speed_threshold / track.speeds[-1])
         return 0.499 * path_score + 0.501 * visual_motion_score
+
+    @staticmethod
+    def _feet(track: _MotionTrack) -> deque[tuple[float, float]]:
+        # 兼容旧 checkpoint 里没有这个字段的轨迹
+        history = getattr(track, "feet", None)
+        if history is None:
+            history = deque(maxlen=60)
+            track.feet = history
+        return history
+
+    def _static_regions(self) -> list[tuple[float, float, float]]:
+        regions = getattr(self, "_static_artifact_regions", None)
+        if regions is None:
+            regions = []
+            self._static_artifact_regions = regions
+        return regions
+
+    def _remember_static_region(self, track: _MotionTrack) -> None:
+        foot_x, foot_y = track.detection.foot_point
+        _, _, width, height = track.detection.bbox
+        radius = max(width, height) * 0.5 + self.STATIC_REGION_PADDING
+        for centre_x, centre_y, existing in self._static_regions():
+            if abs(foot_x - centre_x) <= existing and abs(foot_y - centre_y) <= existing:
+                return
+        self._static_regions().append((float(foot_x), float(foot_y), float(radius)))
+
+    def _in_static_region(self, detection: Detection) -> tuple[float, float, float] | None:
+        foot_x, foot_y = detection.foot_point
+        for region in self._static_regions():
+            centre_x, centre_y, radius = region
+            if abs(foot_x - centre_x) <= radius and abs(foot_y - centre_y) <= radius:
+                return region
+        return None
+
+    def _is_static_artifact(self, track: _MotionTrack) -> bool:
+        """固定位置反复出现、几乎不动、又没有血条 = 地图装饰被当成目标。
+
+        这类前景（地图贴图、门、光斑）每次差分都会命中同一块像素，
+        脚点抖动只有几像素，速度恒为 0。它不属于任何一条敌人路线，
+        也不会有血条；真实单位即便被挡住也会随动画抖动或最终移动。
+        """
+
+        feet = self._feet(track)
+        if len(feet) < self.STATIC_INTERFERENCE_MATCHES:
+            return False
+        recent = list(feet)[-self.STATIC_INTERFERENCE_MATCHES :]
+        spread_x = max(x for x, _ in recent) - min(x for x, _ in recent)
+        spread_y = max(y for _, y in recent) - min(y for _, y in recent)
+        if max(spread_x, spread_y) > self.STATIC_INTERFERENCE_SPREAD:
+            return False
+        if track.detection.health_bar_bbox is not None:
+            return False
+        if self._is_friendly(track.detection):
+            return False
+        # 不看瞬时速度：贴图抖动会把「一像素跳动」算成几十 px/s 的假速度。
+        # 判据只用 60 次匹配内的脚点跨度，真正在走的目标跨度会远超阈值。
+        return not self._is_friendly(track.detection)
 
     def _reject_guides(self, matched: dict[int, int]) -> None:
         for track_id in matched:
@@ -599,7 +667,20 @@ class RouteSpeedFilter:
                     or track.stationary_hits >= self.STATIONARY_GRACE_MATCHES
                 )
             )
+            frozen_static = self._is_static_artifact(track)
             reasons: list[str] = []
+            if frozen_static:
+                reasons.append(
+                    f"同一位置连续 {self.STATIC_INTERFERENCE_MATCHES} 次匹配脚点抖动不超过 "
+                    f"{self.STATIC_INTERFERENCE_SPREAD:.0f} px、无血条、速度接近 0，"
+                    "判定为静态地图装饰"
+                )
+            if frozen_static:
+                self._remember_static_region(track)
+                reasons.append(
+                    f"该位置（{track.detection.foot_point[0]:.0f}, {track.detection.foot_point[1]:.0f}）"
+                    "已登记为静态装饰区域，本帧起该位置的检测不再参与关联"
+                )
             if excessive_speed:
                 reasons.append(
                     f"瞬时速度 {track.speeds[-1]:.0f} px/s 超过上限 {self.speed_threshold:.0f} px/s，"
@@ -619,7 +700,9 @@ class RouteSpeedFilter:
                     reasons.append(
                         "未识别目标，无敌方血条，不在任何出怪时间窗口内且持续驻场，判定为干扰"
                     )
-            track.guide = excessive_speed or stationary_off_path or stationary_unscheduled
+            track.guide = (
+                excessive_speed or stationary_off_path or stationary_unscheduled or frozen_static
+            )
             if track.guide and self._trace_frame is not None:
                 self._trace_frame.setdefault("guides", []).append(
                     {"track_id": track_id, "reason": "；".join(reasons)}
@@ -667,6 +750,24 @@ class RouteSpeedFilter:
         return 2
 
     def update(self, detections: tuple[Detection, ...], timestamp: float) -> tuple[TrackSnapshot, ...]:
+        if detections and self._static_regions():
+            kept: list[Detection] = []
+            for detection in detections:
+                region = self._in_static_region(detection)
+                if region is None:
+                    kept.append(detection)
+                    continue
+                if self._trace_frame is not None:
+                    self._trace_frame.setdefault("static_region", []).append(
+                        {
+                            "reason": (
+                                f"该位置 ({region[0]:.0f}, {region[1]:.0f}) 半径 {region[2]:.0f} px "
+                                "已被判定为静态地图装饰，忽略本帧检测"
+                            ),
+                            "detection": self._trace_detection(detection),
+                        }
+                    )
+            detections = tuple(kept)
         self._current_timestamp = timestamp
         if self._last_stage_timestamp is None:
             self._stage_elapsed = max(0.0, timestamp - self.battle_origin_timestamp) * self.time_scale
