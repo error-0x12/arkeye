@@ -94,7 +94,29 @@ tests/            Unit and regression tests
 tests/fixtures/   Offline test data
 assets/           Recognition templates and operator metadata
 configs/          Board calibration and UI masks
+tools/            Offline trace viewer and JSONL helpers
 ```
+
+## Sample output
+
+Rendered results are too large for git, so they live on the release page:
+
+<https://github.com/error-0x12/arkeye/releases/tag/delivery-1-8-v14>
+
+- `hud.mp4` — 1-8 gameplay with the recognition overlay
+- `chain.mp4` — the same run as a four-panel chain view
+- `trace.jsonl` — per-frame decision log (2498 frames, 86 tracks)
+- `tracks.jsonl` — per-frame track snapshots
+- `summary.json` — aggregate counts for that run
+
+To look at a trace locally, serve it and open the printed URL:
+
+```bash
+python tools/trace_viewer/serve.py trace.jsonl --video hud.mp4
+```
+
+`--video` makes the page draw real frames instead of a coordinate schematic; the
+mp4 is handed out at `/video.mp4` with Range support so seeking works.
 
 ## Third-party data and assets
 
