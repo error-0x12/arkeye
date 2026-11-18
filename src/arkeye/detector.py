@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 
 from arkeye.assets import TemplateLibrary
 from arkeye.health_bars import HealthBarDetector
+from arkeye.ui_panels import UIPanelDetector
 
 BoundingBox = tuple[int, int, int, int]
 
@@ -369,9 +370,13 @@ class BattlefieldDetector:
         blur_size: int = 1,
         analysis_scale: float = 1.0,
         health_bars: HealthBarDetector | None = None,
+        ui_panels: UIPanelDetector | None = None,
     ) -> None:
         if not 0 < analysis_scale <= 1:
             raise DetectionError("analysis_scale must be in (0, 1]")
+        self.ui_panels = ui_panels
+        self.last_panel_rejections: list[dict[str, object]] = []
+        self._frame_counter = 0
         self.analysis_scale = analysis_scale
         if analysis_scale == 1:
             scaled_background = background
@@ -565,6 +570,8 @@ class BattlefieldDetector:
         else:
             analysis_frame = frame
         self.debug_images = [("foreground", self.foreground.last_mask)]
+        self._frame_counter += 1
+        self.last_panel_rejections = []
         detections: list[Detection] = []
         health_evidence = self.health_bars.detect(frame) if self.health_bars is not None else ()
         for candidate in self.foreground.detect(analysis_frame):
@@ -579,6 +586,26 @@ class BattlefieldDetector:
             image = analysis_frame[y : y + height, x : x + width]
             if self._is_prompt_panel(candidate, image):
                 continue
+            if self.ui_panels is not None:
+                original_bbox = tuple(round(value / self.analysis_scale) for value in candidate.bbox)
+                # 面板判定（宽度阈值、OCR）都按原分辨率设计，这里把半分辨率裁剪图还原
+                panel_crop = image
+                if (original_bbox[2], original_bbox[3]) != (width, height):
+                    panel_crop = cv2.resize(image, (original_bbox[2], original_bbox[3]), interpolation=cv2.INTER_CUBIC)
+                verdict = self.ui_panels.classify(
+                    panel_crop,
+                    original_bbox,
+                    round(analysis_frame.shape[0] / self.analysis_scale),
+                    frame_index=self._frame_counter,
+                )
+                if verdict.is_panel:
+                    self.last_panel_rejections.append(
+                        {
+                            "bbox": list(original_bbox),
+                            "reason": f"判定为游戏内 UI 面板：{verdict.reason}",
+                        }
+                    )
+                    continue
             candidate_allowed_ids = self.allowed_enemy_ids
             if self.health_bars is not None:
                 original_bbox = tuple(round(value / self.analysis_scale) for value in candidate.bbox)

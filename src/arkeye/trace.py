@@ -130,6 +130,13 @@ class TraceLogger:
             return
         self._frame["raw_detections"] = [summarize_detection(d) for d in detections]
 
+    def log_ui_panels(self, panels: Sequence[Mapping[str, Any]]) -> None:
+        """记录被判为游戏内 UI 面板、因此没有进入候选的区块。"""
+
+        if self._frame is None or not panels:
+            return
+        self._frame["ui_panels"] = [dict(panel) for panel in panels]
+
     def log_fusion(self, details: Mapping[str, Any]) -> None:
         if self._frame is None:
             return
