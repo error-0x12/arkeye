@@ -1,0 +1,1806 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ArkEye 逐帧溯源</title>
+<style>
+  :root{
+    --bg:#0e1114; --bg2:#151a1e; --bg3:#1d2329; --line:#2a323a;
+    --fg:#e2e7ec; --fg2:#98a4b0; --fg3:#67737f;
+    --ok:#3ec46d; --warn:#e8b33a; --bad:#e0575f; --accent:#5cc8ff;
+    --occ:#ffd23f; --lost:#b478dc; --pred:#54c8dc;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:13px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    display:grid;grid-template-rows:auto auto 1fr auto;
+  }
+  button{background:var(--bg3);border:1px solid var(--line);border-radius:5px;padding:4px 10px;color:inherit;font:inherit;cursor:pointer}
+  button:hover{background:#28313a}
+  button.on{background:#17415a;border-color:#2f7fa6;color:#c5ecff}
+  code,.mono{font-family:"Cascadia Mono",Consolas,monospace}
+  .grow{flex:1 1 auto}
+  .hide{display:none !important}
+
+  /* ---------- header ---------- */
+  header{display:flex;gap:10px;align-items:center;padding:7px 14px;background:var(--bg2);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:600}
+  header h1 small{color:var(--fg3);font-weight:400;font-size:11px;margin-left:6px}
+  input[type=search]{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 9px;color:inherit;font:inherit;width:230px}
+  input[type=search]:focus{outline:1px solid #2f7fa6}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:12px;background:var(--bg3);cursor:pointer;user-select:none;white-space:nowrap}
+  .chip.on{background:#17415a;border-color:#2f7fa6;color:#c5ecff}
+  .meta{display:flex;gap:12px;font-size:12px;color:var(--fg2);flex-wrap:wrap;align-items:center}
+  .meta b{color:var(--fg);font-family:monospace}
+
+  /* ---------- fv bar ---------- */
+  .fvbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 14px;background:#0f1f18;border-bottom:1px solid #245238;font-size:12.5px}
+  .fvbar.off{background:#1e1414;border-bottom-color:#5c2328}
+  .fvbar .fvd{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+  .fvbar.off .fvd{background:var(--bad)}
+  .fvbar .muted{color:var(--fg3)}
+  .fvbar button{padding:2px 9px;font-size:12px}
+
+  /* ---------- main grid ---------- */
+  main{display:grid;grid-template-columns:288px minmax(0,1fr) 436px;overflow:hidden}
+  main.wide{grid-template-columns:288px minmax(0,1fr) 640px}
+  .pane{min-width:0;overflow:hidden;display:flex;flex-direction:column}
+  #left{border-right:1px solid var(--line);background:var(--bg2)}
+  #right{border-left:1px solid var(--line);background:var(--bg2)}
+  .tabs{display:flex;gap:4px}
+  .tab{padding:1px 10px;font-size:11.5px;border-radius:999px;border:1px solid var(--line);background:var(--bg3);cursor:pointer;color:var(--fg2)}
+  .tab.on{background:#17415a;border-color:#2f7fa6;color:#c5ecff}
+  .sumLine{background:#101519;border-left:2px solid var(--accent);border-radius:4px;padding:5px 8px;font-size:12px;color:var(--fg2);margin:6px 0 2px;line-height:1.6}
+  .tscroll{overflow-x:auto;overflow-y:hidden;max-width:100%}
+  .tscroll::-webkit-scrollbar{height:7px}
+  .tscroll::-webkit-scrollbar-thumb{background:#39424b;border-radius:4px}
+  table.dense th,table.dense td,table.dense2 th,table.dense2 td{padding:1px 4px;font-size:10.5px;white-space:nowrap}
+  table.dense td.mono,table.dense2 td.mono{font-family:"Cascadia Mono",Consolas,monospace}
+  table.dense2 td:first-child{white-space:normal;min-width:92px}
+  table.dense2 tr.best{background:#0f2418}
+  table.dense2 tr.best td{color:#8ff0b4}
+  .dim{color:var(--fg3)}
+  .tag{font-size:10.5px;color:var(--fg3);border:1px solid var(--line);border-radius:3px;padding:0 4px}
+  .hl{outline:1px solid #2f7fa6;background:#12242e !important}
+  .fcard{background:#12171b;border:1px solid var(--line);border-radius:5px;padding:6px 8px;margin-bottom:6px;cursor:pointer}
+  .fcard:hover{border-color:#3a4652}
+  .fcard.bad{border-left:2px solid var(--bad)}
+  .fcard .fhead{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap;margin-bottom:3px}
+  .fcard .why{color:var(--fg2);font-size:11.5px;margin-bottom:4px;line-height:1.5}
+  .okTxt{color:var(--ok)}.noTxt{color:var(--fg2)}.badTxt{color:#ff9ba1}
+  .bar.mini{display:inline-block;width:52px;vertical-align:middle;margin-right:4px}
+  .grp{border:1px solid var(--line);border-radius:5px;margin-bottom:6px;overflow:hidden;background:#12171b}
+  .grp>summary{cursor:pointer;list-style:none;padding:3px 8px;font-size:11.5px;display:flex;gap:7px;align-items:center}
+  .grp>summary::-webkit-details-marker{display:none}
+  .grp>summary::before{content:"▸";color:var(--fg3);font-size:9px}
+  .grp[open]>summary::before{content:"▾"}
+  .grp .badgeT{font-size:10.5px;padding:0 5px;border-radius:3px;border:1px solid}
+  .grp .n{color:var(--fg3);margin-left:auto;font-family:monospace}
+  .grp.bad .badgeT{color:#ff9ba1;border-color:#5c2328;background:#2b1216}
+  .grp.warn .badgeT{color:#f0cb74;border-color:#5c4a17;background:#2b2410}
+  .grp.ok .badgeT{color:#7fe0a4;border-color:#245238;background:#10281a}
+  .grp.new .badgeT{color:#8ecbff;border-color:#1e4f70;background:#0e2230}
+  .grp .gbody{padding:4px 8px 6px}
+  .item{padding:4px 0;border-bottom:1px dashed #232a31;font-size:11.5px}
+  .item:last-child{border-bottom:none}
+  .item .why{color:var(--fg);line-height:1.5}
+  .item .det{color:var(--fg3);font-size:10.5px;margin-top:1px;font-family:"Cascadia Mono",Consolas,monospace}
+  .grpAll{font-size:11px;padding:1px 8px;margin-bottom:6px}
+  .paneHead{padding:5px 10px;font-size:11.5px;color:var(--fg3);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;flex:0 0 auto;background:var(--bg2)}
+  .scroll{overflow:auto;flex:1 1 auto;min-height:0}
+
+  /* ---------- center ---------- */
+  #center{display:flex;flex-direction:column;background:#000;min-width:0}
+  #stage{flex:1 1 auto;position:relative;display:grid;place-items:center;min-height:0;padding:8px}
+  #canvasWrap{position:relative;line-height:0}
+  #view{display:block;cursor:default;border-radius:4px}
+  #hint{
+    position:absolute;pointer-events:none;background:#0b0f12ee;border:1px solid #3a4652;
+    border-radius:5px;padding:4px 8px;font-size:12px;white-space:nowrap;display:none;z-index:5;
+  }
+  #emptyStage{position:absolute;inset:0;display:grid;place-items:center;color:var(--fg3);font-size:12.5px;text-align:center;pointer-events:none}
+
+  /* ---------- timeline ---------- */
+  #timeline{flex:0 0 auto;border-top:1px solid var(--line);background:var(--bg2);padding:6px 10px 4px}
+  #tlWrap{position:relative;line-height:0}
+  #tl{display:block;width:100%;cursor:crosshair;border-radius:3px}
+  #tlTip{position:absolute;bottom:100%;margin-bottom:4px;background:#0b0f12ee;border:1px solid #3a4652;border-radius:5px;padding:3px 7px;font-size:11.5px;white-space:nowrap;display:none;pointer-events:none}
+  #tlFoot{display:flex;justify-content:space-between;font-size:11px;color:var(--fg3);padding-top:3px}
+
+  /* ---------- lists ---------- */
+  .row{display:flex;gap:7px;align-items:center;padding:3px 10px;cursor:pointer;font-size:12px;border-left:2px solid transparent}
+  .row:hover{background:#1b222a}
+  .row.cur{background:#17415a;border-left-color:var(--accent)}
+  .row .sw{width:9px;height:9px;border-radius:2px;flex:0 0 auto}
+  .row .k{font-family:monospace;color:var(--fg2);min-width:34px}
+  .row .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .row .n{color:var(--fg3);font-family:monospace;font-size:11px}
+  .sub{padding:4px 10px;color:var(--fg3);font-size:11.5px}
+
+  /* ---------- right panel ---------- */
+  #right .scroll{padding:10px}
+  .selHead{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .swatch{width:11px;height:11px;border-radius:2px;flex:0 0 auto}
+  .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid transparent;white-space:nowrap}
+  .s-ok{background:#14301f;color:#6ee29a;border-color:#26583a}
+  .s-occ{background:#33290d;color:#ffd85c;border-color:#6b5813}
+  .s-lost{background:#271b33;color:#cfa2f0;border-color:#4a3263}
+  .s-pred{background:#0d2c33;color:#6fdcea;border-color:#1d5563}
+  .s-tent{background:#242a30;color:#9aa6b2;border-color:#39424b}
+  .secT{font-size:11.5px;color:var(--fg3);margin:12px 0 5px;display:flex;align-items:center;gap:6px}
+  .secT::after{content:"";flex:1;height:1px;background:var(--line)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+  .kv dt{color:var(--fg3)}
+  .kv dd{margin:0;font-family:monospace}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #232a31;vertical-align:top}
+  th{color:var(--fg3);font-weight:500;font-size:11px}
+  .bar{height:9px;background:#0a0d10;border-radius:2px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;background:#2f7fa6}
+  .bar u{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--bad)}
+  .sc{display:grid;grid-template-columns:70px 1fr 40px;gap:6px;align-items:center;font-size:11.5px;margin-bottom:2px}
+  .sc .nm{color:var(--fg2);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sc.best .bar i{background:var(--ok)}
+  .sc.best .val{color:var(--ok);font-weight:600}
+  .sc .val{text-align:right;font-family:monospace;color:var(--fg2)}
+  .step{border-left:2px solid var(--line);padding:4px 0 4px 8px;margin-bottom:6px;font-size:12px}
+  .step.bad{border-left-color:var(--bad)}
+  .step.warn{border-left-color:var(--warn)}
+  .step.ok{border-left-color:var(--ok)}
+  .step .g{color:var(--fg3);font-size:11px}
+  .step .why{color:var(--fg)}
+  .step .det{color:var(--fg3);font-size:11px;font-family:"Cascadia Mono",Consolas,monospace;margin-top:1px}
+  .link{color:var(--accent);cursor:pointer;font-weight:600}
+  .link:hover{text-decoration:underline}
+  .jumpRow{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .jumpRow button{padding:2px 8px;font-size:11.5px}
+  .mini{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:5px}
+  .mini .row{padding:2px 7px;font-size:11.5px;border-left:none}
+  .notice{background:#2b2410;border:1px solid #5c4a17;border-left:3px solid var(--warn);border-radius:6px;padding:9px 12px;font-size:12px;line-height:1.7;margin-bottom:10px}
+  .notice b{color:#f0cb74}
+  .notice code{background:#1b1a13;padding:1px 4px;border-radius:3px;color:#e8d9a8}
+  .empty{color:var(--fg3);font-size:12px;padding:6px 0}
+
+  /* ---------- footer ---------- */
+  footer{display:flex;gap:14px;align-items:center;padding:4px 14px;background:var(--bg2);border-top:1px solid var(--line);font-size:11.5px;color:var(--fg3);flex-wrap:wrap}
+  kbd{background:var(--bg3);border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:0 5px;font-family:monospace;font-size:10.5px}
+
+  /* ---------- welcome / drop ---------- */
+  #welcome{position:absolute;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}
+  #welcome .box{max-width:620px;text-align:center;padding:24px}
+  #welcome h2{font-size:19px;margin:0 0 10px}
+  #welcome p{color:var(--fg2);line-height:1.8;margin:6px 0}
+  #welcome ol{text-align:left;color:var(--fg2);font-size:12.5px;line-height:1.9;max-width:540px;margin:14px auto}
+  #welcome .pick{margin-top:14px;display:inline-block;padding:9px 20px;font-size:13.5px;background:#17415a;border:1px solid #2f7fa6;border-radius:6px;cursor:pointer;color:#c5ecff}
+  #drop{position:fixed;inset:0;background:#0b0e11e8;display:none;place-items:center;z-index:50;border:3px dashed #2f7fa6}
+  #drop.show{display:grid}
+  .err{color:#ff9ba1}
+  .warn{color:var(--warn)}
+  .progress{height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;width:140px}
+  .progress i{display:block;height:100%;background:var(--accent);width:0%}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ArkEye 逐帧溯源 <small>trace.jsonl</small></h1>
+  <button id="btnOpen">载入 trace.jsonl</button>
+  <input type="search" id="q" placeholder="搜索 帧号 / 轨迹ID / 类别 / 摘要…">
+  <span class="chip" id="fDrop" title="只保留有丢弃记录的帧">有丢弃</span>
+  <span class="chip" id="fGuide" title="只保留判定为干扰的帧">有干扰</span>
+  <span class="chip" id="fDetect" title="只保留真正做了检测的帧">仅检测帧</span>
+  <span class="chip on" id="fRoutes" title="在画面上画关卡路线">路线</span>
+  <span class="grow"></span>
+  <div class="meta" id="meta"></div>
+</header>
+
+<div class="fvbar off" id="fvBar" style="display:none">
+  <span class="fvd"></span><b>FV</b>
+  <span id="fvMsg" class="muted"></span>
+  <span id="fvClip" class="mono"></span>
+  <span id="fvPos" class="mono"></span>
+  <span id="fvPlayState"></span>
+  <span class="grow"></span>
+  <button id="fvFollow">跟随 FV</button>
+  <button id="fvDrive">驱动 FV</button>
+  <button id="fvPlayBtn">播放/暂停</button>
+  <button id="fvReconnect">重连</button>
+</div>
+
+<main>
+  <aside class="pane" id="left">
+    <div class="paneHead"><span>本帧对象</span><span id="objCount"></span></div>
+    <div class="scroll" id="objList" style="flex:0 1 auto;max-height:38%"></div>
+    <div class="paneHead"><span>全部轨迹</span><span id="trackCount"></span></div>
+    <div class="scroll" id="trackList" style="flex:1 1 62%"></div>
+  </aside>
+
+  <section class="pane" id="center">
+    <div id="stage">
+      <div id="canvasWrap">
+        <canvas id="view" width="1920" height="1080"></canvas>
+        <div id="hint"></div>
+      </div>
+      <div id="emptyStage"></div>
+      <div id="welcome">
+        <div class="box">
+          <h2>把 trace.jsonl 拖进来</h2>
+          <p>这一页把「每一帧、每个目标为什么被这样判定」画成一张可点的战场图。</p>
+          <p>点画面里的框 → 右侧出它的完整链条；点时间轴 → 直接跳到那一帧。</p>
+          <div class="pick" id="pick2">选择 trace.jsonl</div>
+          <ol>
+            <li>生成：渲染时加 <code>--trace &lt;路径&gt;</code></li>
+            <li>把生成的 <code>trace.jsonl</code> 拖进页面</li>
+            <li>点头顶「载入视频」，选 <code>1-8实战.mp4</code>，画面就是真实帧而不是示意图</li>
+            <li>要让 <b>FV 播放器</b>联动：<code>FV.exe --http "1-8实战.mp4"</code> 启动，再用 <code>serve.py</code> 打开本页</li>
+          </ol>
+          <p style="color:#67737f;font-size:11.5px">现成样本：<code>output/1_8_hud_weighted_fusion/trace.jsonl</code></p>
+        </div>
+      </div>
+    </div>
+    <div id="timeline">
+      <div id="tlWrap">
+        <canvas id="tl" height="46"></canvas>
+        <div id="tlTip"></div>
+      </div>
+      <div id="tlFoot"><span id="tlLeft">—</span><span id="tlRight">—</span></div>
+    </div>
+  </section>
+
+  <aside class="pane" id="right">
+    <div class="paneHead">
+      <div class="tabs" id="rightTabs">
+        <button class="tab on" data-tab="sel">选中对象</button>
+        <button class="tab" data-tab="all">本帧全量</button>
+      </div>
+      <span id="selKind"></span>
+    </div>
+    <div class="scroll" id="detail"></div>
+  </aside>
+</main>
+
+<footer>
+  <span><kbd>←</kbd><kbd>→</kbd> 翻帧</span>
+  <span><kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> ×10</span>
+  <span><kbd>Home</kbd><kbd>End</kbd></span>
+  <span><kbd>d</kbd> 仅检测帧</span>
+  <span><kbd>g</kbd> 有干扰</span>
+  <span><kbd>u</kbd> 有丢弃</span>
+  <span><kbd>v</kbd> 载入视频</span>
+  <span><kbd>Esc</kbd> 取消选中</span>
+  <span class="grow"></span>
+  <span><button id="btnVideo">载入视频</button></span>
+  <span id="status"></span>
+</footer>
+
+<div id="drop"><div style="font-size:16px">松手载入</div></div>
+<input type="file" id="fileInput" accept=".jsonl,.json,.txt" hidden>
+<input type="file" id="videoInput" accept="video/*" hidden>
+
+<script>
+"use strict";
+
+/* ============================================================
+   词表与配色
+   ============================================================ */
+const STATUS = {
+  confirmed:{zh:"已确认", cls:"s-ok", color:"#3ec46d"},
+  occluded :{zh:"重叠支撑", cls:"s-occ", color:"#ffd23f"},
+  lost     :{zh:"HELD 保持", cls:"s-lost", color:"#b478dc"},
+  predicted:{zh:"时间轴预测", cls:"s-pred", color:"#54c8dc"},
+  tentative:{zh:"暂定", cls:"s-tent", color:"#9aa6b2"},
+};
+const GROUPS = [
+  {k:"matched",          zh:"匹配到既有轨迹",   tone:"ok"},
+  {k:"new_tracks",       zh:"新建内部轨迹",     tone:"new"},
+  {k:"pending",          zh:"连续证据不足",     tone:"warn"},
+  {k:"guides",           zh:"判定为干扰并丢弃", tone:"bad"},
+  {k:"off_path_dropped", zh:"不在路线上丢弃",   tone:"bad"},
+  {k:"gate_rejected",    zh:"开局门控拒绝",     tone:"bad"},
+  {k:"adoption_rejected",zh:"拒绝收养",         tone:"bad"},
+  {k:"budget_rejected", zh:"配额/区域拒绝",     tone:"bad"},
+  {k:"stale_removed",    zh:"幽灵轨迹删除",     tone:"bad"},
+  {k:"demoted",          zh:"降级为未识别",     tone:"warn"},
+  {k:"promoted",         zh:"恢复类别",         tone:"ok"},
+  {k:"path_relaxed",    zh:"路线不匹配·整帧放宽", tone:"warn"},
+  {k:"id_blocked",      zh:"附近有丢失轨迹·暂不新建身份", tone:"warn"},
+  {k:"speed_rejected",  zh:"位移超过本帧门限",     tone:"warn"},
+  {k:"occluded_support", zh:"作为重叠支撑补入", tone:"ok"},
+  {k:"accepted",         zh:"进入正式跟踪",     tone:"ok"},
+];
+const DROP_KEYS = ["guides","off_path_dropped","gate_rejected","adoption_rejected","stale_removed","budget_rejected","id_blocked","speed_rejected"];
+
+// 与 HUD 同款配色：cv2 里 (b,g,r)=80+(id*k)%176
+function trackColor(id){
+  const b = 80 + (id*67)%176, g = 80 + (id*113)%176, r = 80 + (id*173)%176;
+  return `rgb(${r},${g},${b})`;
+}
+
+/* ============================================================
+   状态
+   ============================================================ */
+const state = {
+  file:null, name:"",
+  idx:[], byFrame:new Map(), series:new Map(),
+  visible:[], current:-1,
+  kind:"trace",
+  saw:{detect:false,summary:false,filter:false,trackId:false},
+  tab:"sel",                // 右栏页签：sel | all
+  model:null,               // 当前帧的对象模型
+  sel:null,                 // {kind:'track', id} | {kind:'cand', key}
+  hover:null,
+  filters:{q:"",drop:false,guide:false,detectOnly:false},
+  fcache:new Map(),
+  video:null, videoReady:false,
+  tlDrag:false,
+  routes:null,          // /routes.json：普通/飞行/Boss 路线
+  showRoutes:true,
+};
+
+/* ============================================================
+   小工具
+   ============================================================ */
+const $ = (id)=>document.getElementById(id);
+const esc = (v)=> v===null||v===undefined ? "" : String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (v,d=2)=> (v===null||v===undefined||Number.isNaN(Number(v))) ? "—" : Number(v).toFixed(d);
+const pct = v=> Math.max(0,Math.min(1,Number(v)||0))*100;
+const shortName = (s)=> String(s||"").replace(/（.*$/,"").replace(/\(.*$/,"").trim();
+const bboxKey = (b)=> b ? `${Math.round(b[0])},${Math.round(b[1])},${Math.round(b[2])},${Math.round(b[3])}` : "";
+const pill = (st)=>{ const s = STATUS[st] || {zh:st||"—", cls:"s-tent"}; return `<span class="pill ${s.cls}">${esc(s.zh)}</span>`; };
+// confirmed 但本帧没匹配上 = 正处于「抖动保持窗」内（多由技能特效遮挡造成）
+const statusText = (st, misses)=> (st === "confirmed" && (misses || 0) > 0)
+  ? "已确认·保持"
+  : ((STATUS[st] && STATUS[st].zh) || st || "—");
+const displayClass = (c)=> c==="unknown" ? "未识别" : c==="friendly" ? "我方干员" : (c||"—");
+const setStatus = (t)=>{ $("status").textContent = t; };
+
+/* ============================================================
+   载入与索引（整文件只读一遍记字节区间，之后按需回读）
+   ============================================================ */
+async function indexFile(file){
+  state.file = file; state.name = file.name;
+  state.idx = []; state.byFrame.clear(); state.series.clear(); state.fcache.clear();
+  state.current = -1; state.sel = null; state.model = null;
+  state.saw = {detect:false,summary:false,filter:false,trackId:false};
+  state.kind = "trace";
+  state.dups = 0;
+  state.seenFrames = new Set();
+
+  const total = file.size, decoder = new TextDecoder("utf-8");
+  let carry = new Uint8Array(0), base = 0, line = 0, bad = 0, last = performance.now();
+
+  const take = (bytes, start, end)=>{
+    line++;
+    if(!bytes.length) return;
+    let text;
+    try{ text = decoder.decode(bytes); }catch{ bad++; return; }
+    if(!text.trim()) return;
+    let o;
+    try{ o = JSON.parse(text); }catch{ bad++; return; }
+    addIndex(o, line-1, start, end);
+  };
+
+  const reader = file.stream().getReader();
+  for(;;){
+    const {done, value} = await reader.read();
+    if(done) break;
+    const merged = new Uint8Array(carry.length + value.length);
+    merged.set(carry,0); merged.set(value, carry.length);
+    let s = 0;
+    for(let i=0;i<merged.length;i++){
+      if(merged[i] === 10){ take(merged.subarray(s,i), base+s, base+i+1); s = i+1; }
+    }
+    carry = merged.slice(s); base += s;
+    if(performance.now() - last > 40){
+      setStatus(`建立索引 ${Math.round(base/total*100)}%`);
+      await new Promise(r=>setTimeout(r,0));
+      last = performance.now();
+    }
+  }
+  if(carry.length) take(carry, base, base+carry.length);
+
+  if(!state.idx.length){
+    setStatus("这个文件里没有可解析的记录");
+    return;
+  }
+  state.idx.sort((a,b)=>a.frame-b.frame);
+  state.idx.forEach((r,i)=>{ if(!state.byFrame.has(r.frame)) state.byFrame.set(r.frame,i); });
+  state.kind = (!state.saw.detect && !state.saw.summary && !state.saw.filter && state.saw.trackId) ? "tracks" : "trace";
+
+  $("welcome").style.display = "none";
+  renderMeta(bad);
+  applyFilters();
+  renderTrackList();
+  const p = new URLSearchParams(location.search);
+  const want = Number(p.get("frame"));
+  selectFrame(Number.isFinite(want) ? byFramePos(want) : 0, {silent:true});
+  const wantTrack = Number(p.get("track"));
+  if(Number.isFinite(wantTrack) && state.series.has(wantTrack)) selectTrack(wantTrack, {jump:false});
+  const wantTab = p.get("tab");
+  if(wantTab === "all" || wantTab === "sel") setTab(wantTab);
+}
+
+function addIndex(o, line, start, end){
+  const frame = Number(o.frame_index ?? line);
+  // 分块渲染拼接出的 trace 会重复同一帧（且 stage_time 可能不同），只保留第一条，
+  // 否则同一帧在轨迹序列里出现两次，面板和逐帧列表会互相矛盾。
+  if(state.seenFrames.has(frame)){ state.dups++; return; }
+  state.seenFrames.add(frame);
+  const tracks = Array.isArray(o.tracks) ? o.tracks : [];
+  const f = o.filter || null;
+  if("detect" in o)  state.saw.detect = true;
+  if("summary" in o) state.saw.summary = true;
+  if("filter" in o)  state.saw.filter = true;
+  if("track_id" in o) state.saw.trackId = true;
+
+  let drops = 0, guides = 0, sevBad = 0, sevWarn = 0;
+  if(f){
+    for(const k of DROP_KEYS) drops += (f[k]||[]).length;
+    guides = (f.guides||[]).length;
+    sevBad = guides + (f.gate_rejected||[]).length + (f.adoption_rejected||[]).length + (f.stale_removed||[]).length;
+    sevWarn = (f.off_path_dropped||[]).length + (f.demoted||[]).length;
+  }
+  const rec = {
+    line, start, end, frame,
+    ts:Number(o.timestamp||0), stageT:Number(o.stage_time||0),
+    detect:!!o.detect, speed:o.game_speed ?? 1, scale:o.time_scale ?? 1,
+    summary:o.summary || "",
+    nCand:(o.raw_detections||[]).length, nTrack:tracks.length,
+    drops, guides, sevBad, sevWarn,
+    tid:o.track_id, tcls:o.enemy_id, tstatus:o.status, tconf:o.confidence,
+    hay:(o.summary||"")+" "+tracks.map(t=>`${t.track_id} ${t.class} ${t.class_display||""}`).join(" ")
+        + (o.track_id!==undefined ? ` ${o.track_id} ${o.enemy_id||""} ${o.status||""}` : ""),
+  };
+  state.idx.push(rec);
+
+  for(const t of tracks){
+    const id = t.track_id;
+    let s = state.series.get(id);
+    if(!s){ s = {frames:[], status:[], cls:[], conf:[], speed:[], miss:[], bbox:[], foot:[]}; state.series.set(id,s); }
+    s.frames.push(frame); s.status.push(t.status||""); s.cls.push(t.class||"");
+    s.conf.push(Number(t.confidence||0)); s.speed.push(Number(t.speed_px_s||0));
+    s.miss.push(Number(t.misses||0)); s.bbox.push(t.bbox||null); s.foot.push(t.foot||null);
+  }
+}
+
+function getFrameData(pos){
+  const rec = state.idx[pos];
+  if(!rec) return Promise.resolve(null);
+  if(state.fcache.has(rec.frame)) return Promise.resolve(state.fcache.get(rec.frame));
+  return state.file.slice(rec.start, rec.end).text().then(text=>{
+    let o; try{ o = JSON.parse(text); }catch{ return null; }
+    if(state.fcache.size > 200) state.fcache.delete(state.fcache.keys().next().value);
+    state.fcache.set(rec.frame, o);
+    return o;
+  });
+}
+
+function byFramePos(frame){
+  const a = state.idx;
+  if(!a.length) return 0;
+  let lo = 0, hi = a.length-1;
+  if(frame <= a[0].frame) return 0;
+  if(frame >= a[hi].frame) return hi;
+  while(lo <= hi){
+    const mid = (lo+hi)>>1;
+    if(a[mid].frame === frame) return mid;
+    if(a[mid].frame < frame) lo = mid+1; else hi = mid-1;
+  }
+  const i = Math.max(0,hi), j = Math.min(a.length-1,lo);
+  return Math.abs(a[i].frame-frame) <= Math.abs(a[j].frame-frame) ? i : j;
+}
+
+function byTimePos(ts){
+  const a = state.idx;
+  if(!a.length) return 0;
+  let lo = 0, hi = a.length-1;
+  while(lo < hi){ const mid = (lo+hi)>>1; if(a[mid].ts < ts) lo = mid+1; else hi = mid; }
+  const j = Math.max(0, lo-1);
+  return Math.abs(a[lo].ts - ts) <= Math.abs(a[j].ts - ts) ? lo : j;
+}
+
+/* ============================================================
+   过滤
+   ============================================================ */
+function applyFilters(){
+  const f = state.filters, q = f.q.trim().toLowerCase();
+  const vis = [];
+  for(let i=0;i<state.idx.length;i++){
+    const r = state.idx[i];
+    if(f.detectOnly && !r.detect) continue;
+    if(f.drop && r.drops === 0) continue;
+    if(f.guide && r.guides === 0) continue;
+    if(q && !(r.hay.toLowerCase().includes(q) || String(r.frame).includes(q))) continue;
+    vis.push(i);
+  }
+  state.visible = vis;
+  drawTimeline();
+}
+
+function renderMeta(bad){
+  const first = state.idx[0], last = state.idx[state.idx.length-1];
+  const multi = state.byFrame.size !== state.idx.length;
+  $("meta").innerHTML = `
+    <span><b>${esc(state.name)}</b></span>
+    <span>帧 <b>${first.frame}</b>–<b>${last.frame}</b></span>
+    <span>记录 <b>${state.idx.length}</b>${multi?` · 帧 <b>${state.byFrame.size}</b>`:""}</span>
+    ${state.series.size?`<span>轨迹 <b>${state.series.size}</b></span>`:""}
+    ${state.kind==="tracks"?`<span class="err">缺少 detect/filter</span>`:""}
+    ${state.dups?`<span class="warn" title="分段渲染拼接造成，已只保留每帧的第一条">去重 ${state.dups} 条重复帧</span>`:""}
+    ${bad?`<span class="err">${bad} 行无法解析</span>`:""}`;
+  setStatus(`已载入 ${state.idx.length} 条记录`);
+}
+
+/* ============================================================
+   帧模型：把 raw / fusion / filter / tracks 按 bbox 与 track_id 关联
+   ============================================================ */
+function buildModel(o){
+  const cands = new Map();   // bboxKey -> 候选
+  const getCand = (bbox)=>{
+    const k = bboxKey(bbox);
+    let c = cands.get(k);
+    if(!c){ c = {key:k, bbox, raw:null, fused:null, steps:[], trackIds:new Set()}; cands.set(k,c); }
+    return c;
+  };
+  for(const d of (o.raw_detections||[])) getCand(d.bbox).raw = d;
+  for(const f of ((o.fusion && o.fusion.fused) || [])) getCand(f.bbox).fused = f;
+
+  const tracks = (o.tracks||[]).map(t=>({
+    id:t.track_id, snap:t, steps:[], cls:t.class,
+    display:t.class_display || displayClass(t.class),
+  }));
+  const trackById = new Map(tracks.map(t=>[t.id,t]));
+  // 内部跟踪 ID 与 HUD 输出 ID 是两套编号。旧 trace 没有 slot_track_id，
+  // 只能用脚点距离做兜底归属（快照框经过 65/35 平滑，不能要求精确相等）。
+  const ownerOf = (det)=>{
+    if(!det || !Array.isArray(det.bbox)) return null;
+    const fx = det.bbox[0] + det.bbox[2] / 2;
+    const fy = det.bbox[1] + det.bbox[3] - 1;
+    let best = null;
+    for(const t of tracks){
+      if(t.snap.misses !== 0 || !Array.isArray(t.snap.foot)) continue;
+      const d = Math.hypot(t.snap.foot[0] - fx, t.snap.foot[1] - fy);
+      if(d <= 40 && (best === null || d < best.d)) best = {id: t.id, d};
+    }
+    return best ? best.id : null;
+  };
+  const orphanSteps = [];
+
+  const fl = o.filter || null;
+  if(fl){
+    for(const g of GROUPS){
+      for(const it of (fl[g.k]||[])){
+        const det = it.detection || (Array.isArray(it.bbox) ? it : null);
+        const cand = det && det.bbox ? getCand(det.bbox) : null;
+
+        let owner = null;
+        if(it.slot_track_id !== undefined) owner = it.slot_track_id;
+        else owner = ownerOf(det);
+        if(cand) cand.steps.push({g, it, owner});
+        if(owner !== null){
+          const target = trackById.get(owner);
+          if(target) target.steps.push({g, it});
+          if(cand) cand.trackIds.add(owner);
+        }else if(it.track_id !== undefined){
+          orphanSteps.push({g, it, id:it.track_id});
+        }
+      }
+    }
+  }
+  return {cands:[...cands.values()], tracks, orphanSteps};
+}
+
+/* ============================================================
+   帧切换
+   ============================================================ */
+async function selectFrame(pos, opts={}){
+  if(pos < 0 || pos >= state.idx.length) return;
+  state.current = pos;
+  const rec = state.idx[pos];
+  const o = await getFrameData(pos);
+  state.currentRaw = o;
+  state.model = (o && state.kind === "trace") ? buildModel(o) : null;
+  setFrameHeader(rec, o);
+  draw();
+  drawTimeline();
+  renderObjList();
+  renderDetail();
+  seekVideo(rec);
+  if(!opts.silent) setStatus(`第 ${rec.frame} 帧 · ${fmt(rec.ts,2)}s`);
+}
+
+function stepFrame(delta){
+  const vis = state.visible.length ? state.visible : state.idx.map((_,i)=>i);
+  const k = vis.indexOf(state.current);
+  const next = Math.max(0, Math.min(vis.length-1, (k<0?0:k) + delta));
+  selectFrame(vis[next]);
+}
+
+function setFrameHeader(rec, o){
+  $("emptyStage").textContent = "";
+}
+
+/* ============================================================
+   画布绘制
+   ============================================================ */
+const W = 1920, H = 1080;
+
+function draw(){
+  const cv = $("view"), rec = state.idx[state.current];
+  applyFit();
+  if(!rec) return;
+  const rect = cv.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if(cv.width !== Math.round(rect.width*dpr) || cv.height !== Math.round(rect.height*dpr)){
+    cv.width = Math.round(rect.width*dpr);
+    cv.height = Math.round(rect.height*dpr);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(1,0,0,1,0,0);
+  g.clearRect(0,0,cv.width,cv.height);
+  const sx = cv.width / W, sy = cv.height / H;
+  g.setTransform(sx,0,0,sy,0,0);
+
+  // 背景：有视频就用真实帧，否则画示意网格
+  if(state.video && state.videoReady && state.video.videoWidth){
+    try{ g.drawImage(state.video, 0, 0, W, H); }catch{ drawGrid(g); }
+  }else{
+    drawGrid(g);
+  }
+
+  drawRoutes(g);
+
+  const m = state.model;
+  if(!m){ return; }
+
+  // 候选框（做了检测的帧才有）
+  for(const c of m.cands){
+    if(!c.raw && !c.fused) continue;
+    const b = c.bbox; if(!b) continue;
+    const dropped = (c.fused && c.fused.result === "dropped")
+      || c.steps.some(s=>DROP_KEYS.includes(s.g.k));
+    g.save();
+    g.setLineDash([5,4]);
+    g.lineWidth = 1.4;
+    g.strokeStyle = dropped ? "rgba(224,87,95,.85)" : "rgba(232,179,58,.9)";
+    g.strokeRect(b[0], b[1], b[2], b[3]);
+    g.restore();
+  }
+
+  // 输出轨迹
+  for(const t of m.tracks){
+    const s = t.snap, color = trackColor(t.id);
+    const selected = state.sel && state.sel.kind === "track" && state.sel.id === t.id;
+    const hovered = state.hover && state.hover.kind === "track" && state.hover.id === t.id;
+    g.save();
+    g.lineWidth = selected ? 3.2 : 2;
+    g.strokeStyle = selected ? "#ffffff" : color;
+
+    if(s.status === "lost" || s.status === "occluded"){
+      const [fx, fy] = s.foot || [0,0];
+      const r = s.status === "occluded" ? Math.min(90, Math.max(10, Math.max(s.bbox[2],s.bbox[3])*0.6))
+                                        : Math.min(36, Math.max(9, Math.max(s.bbox[2],s.bbox[3])*0.35));
+      g.beginPath();
+      if(s.status === "occluded"){ g.arc(fx, fy, r, 0, Math.PI*2); }
+      else { g.moveTo(fx, fy-r); g.lineTo(fx+r, fy); g.lineTo(fx, fy+r); g.lineTo(fx-r, fy); g.closePath(); }
+      g.stroke();
+      g.fillStyle = color; g.beginPath(); g.arc(fx, fy, 3, 0, Math.PI*2); g.fill();
+      drawLabel(g, `${selected||hovered?"":""}#${t.id} ${shortName(t.display)}`, fx + r + 4, fy, color);
+    }else{
+      const b = s.bbox;
+      if(s.status === "predicted") g.setLineDash([6,4]);
+      if(s.status === "tentative") g.strokeStyle = "#9aa6b2";
+      g.strokeRect(b[0], b[1], b[2], b[3]);
+      g.fillStyle = selected ? "#fff" : color;
+      g.beginPath(); g.arc(s.foot[0], s.foot[1], 3.2, 0, Math.PI*2); g.fill();
+      drawLabel(g, `#${t.id} ${shortName(t.display)}`, b[0], b[1] - 6, selected ? "#fff" : color);
+    }
+    if(selected){
+      const b = s.bbox;
+      g.setLineDash([]); g.lineWidth = 1;
+      g.strokeStyle = "rgba(255,255,255,.5)";
+      g.strokeRect(b[0]-3, b[1]-3, b[2]+6, b[3]+6);
+    }
+    g.restore();
+  }
+
+  // 选中的候选框高亮
+  if(state.sel && state.sel.kind === "cand"){
+    const c = m.cands.find(x=>x.key === state.sel.key);
+    if(c && c.bbox){
+      g.save(); g.setLineDash([]); g.lineWidth = 2.5; g.strokeStyle = "#fff";
+      g.strokeRect(c.bbox[0]-2, c.bbox[1]-2, c.bbox[2]+4, c.bbox[3]+4);
+      g.restore();
+    }
+  }
+
+  // 状态文字
+  g.save();
+  g.font = "600 20px 'Segoe UI','Microsoft YaHei',sans-serif";
+  g.fillStyle = "rgba(226,231,236,.92)";
+  const rec2 = state.idx[state.current];
+  const head = `#${rec2.frame}   ${fmt(rec2.ts,2)}s   轨迹 ${m.tracks.length}   候选 ${m.cands.length}`;
+  const wText = g.measureText(head).width;
+  g.fillStyle = "rgba(0,0,0,.55)";
+  g.fillRect(8, 8, wText + 20, 32);
+  g.fillStyle = "rgba(226,231,236,.95)";
+  g.fillText(head, 18, 31);
+  g.restore();
+
+  drawRouteLegend(g);
+}
+
+function drawRoutes(g){
+  const data = state.routes;
+  if(!state.showRoutes || !data || !data.available || !Array.isArray(data.routes)) return;
+  const selClass = (()=>{
+    if(!state.sel || state.sel.kind !== "track" || !state.model) return null;
+    const t = state.model.tracks.find(x=>x.id === state.sel.id);
+    return t ? t.cls : null;
+  })();
+
+  for(const r of data.routes){
+    const pts = r.points;
+    if(!Array.isArray(pts) || pts.length < 2) continue;
+    const highlight = selClass !== null && Array.isArray(r.classes) && r.classes.includes(selClass);
+    const boss = r.kind === "boss";
+    const fly = r.kind === "fly";
+    const color = boss ? "rgba(255,42,42," + (highlight ? "0.98" : "0.80") + ")"
+               : fly  ? "rgba(255,210,63," + (highlight ? "0.95" : "0.62") + ")"
+               :        "rgba(255,72,72," + (highlight ? "0.85" : "0.38") + ")";
+    g.save();
+    g.strokeStyle = color;
+    g.lineWidth = (boss ? 6 : fly ? 3.2 : 2.2) + (highlight ? 1.8 : 0);
+    g.lineJoin = "round";
+    g.lineCap = "round";
+    g.beginPath();
+    g.moveTo(pts[0][0], pts[0][1]);
+    for(let i=1;i<pts.length;i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.stroke();
+    // 起点小圈，标出怪口
+    g.fillStyle = color;
+    g.beginPath();
+    g.arc(pts[0][0], pts[0][1], boss ? 7 : 4.5, 0, Math.PI*2);
+    g.fill();
+    if(boss || highlight){
+      drawLabel(g, (boss ? "Boss 路线 " : "路线 ") + "#" + r.index, pts[0][0] + 10, pts[0][1] - 4, color);
+    }
+    g.restore();
+  }
+}
+
+function drawRouteLegend(g){
+  const data = state.routes;
+  if(!state.showRoutes || !data || !data.available) return;
+  const items = [
+    {t:"普通", c:"rgba(255,72,72,.85)", w:2.2},
+    {t:"飞行", c:"rgba(255,210,63,.9)", w:3.2},
+    {t:"Boss", c:"rgba(255,42,42,.95)", w:6},
+  ];
+  const pad = 12, rowH = 26;
+  const boxW = 214, boxH = pad*2 + rowH*items.length + 8;
+  const x0 = 12, y0 = H - boxH - 12;
+  g.save();
+  g.fillStyle = "rgba(6,9,11,.66)";
+  g.fillRect(x0, y0, boxW, boxH);
+  g.strokeStyle = "rgba(90,102,114,.5)";
+  g.lineWidth = 1;
+  g.strokeRect(x0, y0, boxW, boxH);
+  g.font = "600 17px 'Segoe UI','Microsoft YaHei',sans-serif";
+  items.forEach((item, i)=>{
+    const y = y0 + pad + 14 + i*rowH;
+    g.strokeStyle = item.c; g.lineWidth = item.w;
+    g.beginPath(); g.moveTo(x0 + 14, y); g.lineTo(x0 + 58, y); g.stroke();
+    g.fillStyle = "rgba(226,231,236,.92)";
+    g.fillText(item.t, x0 + 70, y + 6);
+  });
+  g.fillStyle = "rgba(120,132,144,.95)";
+  g.font = "500 15px 'Segoe UI','Microsoft YaHei',sans-serif";
+  g.fillText(`共 ${data.routes.length} 条 · Boss ${data.boss ? shortName(data.boss) : "未识别"}`, x0 + 14, y0 + boxH - 12);
+  g.restore();
+}
+
+function drawGrid(g){
+  g.save();
+  g.fillStyle = "#0b0f12";
+  g.fillRect(0,0,W,H);
+  g.strokeStyle = "#151c22"; g.lineWidth = 1;
+  for(let x=0;x<=W;x+=120){ g.beginPath(); g.moveTo(x,0); g.lineTo(x,H); g.stroke(); }
+  for(let y=0;y<=H;y+=120){ g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke(); }
+  g.fillStyle = "#3d4855";
+  g.font = "16px 'Segoe UI','Microsoft YaHei',sans-serif";
+  g.textAlign = "right";
+  g.fillText("未载入视频：这里只画坐标示意（点右下「载入视频」可显示真实帧）", W-20, 30);
+  g.textAlign = "left";
+  g.restore();
+}
+
+function drawLabel(g, text, x, y, color){
+  g.save();
+  g.font = "600 17px 'Segoe UI','Microsoft YaHei',sans-serif";
+  const w = g.measureText(text).width;
+  const bx = Math.max(2, Math.min(x, W - w - 10));
+  const by = Math.max(18, Math.min(y, H - 4));
+  g.fillStyle = "rgba(6,9,11,.78)";
+  g.fillRect(bx-3, by-16, w+7, 21);
+  g.fillStyle = color;
+  g.fillText(text, bx, by-1);
+  g.restore();
+}
+
+/* ============================================================
+   画布命中测试与交互
+   ============================================================ */
+function canvasPoint(ev){
+  const cv = $("view"), r = cv.getBoundingClientRect();
+  return [ (ev.clientX - r.left) / r.width * W, (ev.clientY - r.top) / r.height * H ];
+}
+
+/* 命中容差按屏幕像素换算回画布单位，缩放后依然好点 */
+function hitPad(){
+  const r = $("view").getBoundingClientRect();
+  const scale = r.width > 0 ? r.width / W : 1;
+  return 12 / scale;
+}
+
+function hitTest(px, py){
+  const m = state.model; if(!m) return null;
+  const pad = hitPad();
+  // 轨迹优先（它们在候选之上绘制）
+  for(let i=m.tracks.length-1;i>=0;i--){
+    const t = m.tracks[i], s = t.snap;
+    if(hitsBBox(s.foot, s.bbox, s.status, px, py, pad)) return {kind:"track", id:t.id};
+  }
+  for(const c of m.cands){
+    if(!c.bbox) continue;
+    const b = c.bbox;
+    if(px >= b[0]-pad && px <= b[0]+b[2]+pad && py >= b[1]-pad && py <= b[1]+b[3]+pad) return {kind:"cand", key:c.key};
+  }
+  return null;
+}
+
+function hitsBBox(foot, bbox, status, px, py, pad){
+  if(bbox && px >= bbox[0]-pad && px <= bbox[0]+bbox[2]+pad && py >= bbox[1]-pad && py <= bbox[1]+bbox[3]+pad) return true;
+  if(foot && (status === "lost" || status === "occluded")){
+    const dx = px - foot[0], dy = py - foot[1];
+    if(dx*dx + dy*dy <= pad*pad) return true;
+  }
+  return false;
+}
+
+function hideHint(){
+  state.hover = null;
+  const hint = $("hint");
+  if(hint) hint.style.display = "none";
+}
+
+function bindCanvas(){
+  const cv = $("view"), hint = $("hint");
+  cv.addEventListener("mousemove", ev=>{
+    const [px,py] = canvasPoint(ev);
+    const previous = state.hover ? JSON.stringify(state.hover) : "";
+    const hit = hitTest(px,py);
+    state.hover = hit;
+    cv.style.cursor = hit ? "pointer" : "default";
+    if(hit){
+      let text = "";
+      if(state.hover.kind === "track"){
+        const t = state.model.tracks.find(x=>x.id === state.hover.id);
+        text = `#${t.id} ${shortName(t.display)} · ${(STATUS[t.snap.status]||{}).zh||t.snap.status} · ${fmt(t.snap.confidence,2)}`;
+      }else{
+        const c = state.model.cands.find(x=>x.key === state.hover.key);
+        const res = c.fused ? (c.fused.recognized ? c.fused.best_class : "unknown") : (c.raw ? c.raw.class : "");
+        text = `候选 ${c.bbox ? c.bbox.map(Math.round).join(",") : ""} · ${res} · 点开看链条`;
+      }
+      hint.textContent = text;
+      hint.style.display = "block";
+      const wrap = $("canvasWrap").getBoundingClientRect();
+      hint.style.left = Math.min(ev.clientX - wrap.left + 14, wrap.width - hint.offsetWidth - 6) + "px";
+      hint.style.top  = Math.max(2, ev.clientY - wrap.top - 30) + "px";
+    }else{
+      hint.style.display = "none";
+    }
+    // 只有高亮对象真的变了才重绘，鼠标划过空白不再每帧整屏重画
+    if(JSON.stringify(hit || null) !== (previous || "")) draw();
+  });
+  cv.addEventListener("mouseleave", ()=>{ hideHint(); draw(); });
+  // 滚轮滚动、点选、翻页、窗口失焦时收起提示，避免它一直挂在画面上
+  cv.addEventListener("wheel", hideHint, {passive:true});
+  window.addEventListener("wheel", () => { if($("hint").style.display === "block") hideHint(); }, {passive:true});
+  window.addEventListener("blur", hideHint);
+  document.addEventListener("keydown", hideHint);
+  $("timeline").addEventListener("scroll", hideHint, {passive:true});
+  cv.addEventListener("click", ev=>{
+    hideHint();
+    const [px,py] = canvasPoint(ev);
+    const hit = hitTest(px,py);
+    if(!hit){ setSel(null); return; }
+    if(hit.kind === "track") selectTrack(hit.id, {jump:false});
+    else setSel(hit);
+  });
+}
+
+/* ============================================================
+   时间轴
+   ============================================================ */
+function drawTimeline(){
+  const cv = $("tl");
+  if(!state.idx.length) return;
+  const cssW = cv.parentElement.clientWidth || 800;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(cssW*dpr); cv.height = Math.round(46*dpr);
+  cv.style.height = "46px";
+  const g = cv.getContext("2d");
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,cssW,46);
+
+  const a = state.idx, n = a.length;
+  const f0 = a[0].frame, f1 = a[n-1].frame, span = Math.max(1, f1-f0);
+  const xOf = (frame)=> (frame-f0)/span*cssW;
+
+  // 背景
+  g.fillStyle = "#0a0d10"; g.fillRect(0,0,cssW,46);
+
+  // 严重度条
+  for(const r of a){
+    const x = xOf(r.frame);
+    g.fillStyle = r.sevBad ? "#e0575f" : r.sevWarn ? "#e8b33a" : r.detect ? "#3ec46d" : "#232a31";
+    g.fillRect(x, 3, Math.max(1, cssW/n), 18);
+  }
+
+  // 选中轨迹的存在带
+  if(state.sel && state.sel.kind === "track"){
+    const s = state.series.get(state.sel.id);
+    if(s){
+      for(let i=0;i<s.frames.length;i++){
+        const x = xOf(s.frames[i]);
+        const st = s.status[i];
+        g.fillStyle = (STATUS[st]&&STATUS[st].color) || "#39424b";
+        g.fillRect(x, 24, Math.max(1, cssW/n), 12);
+      }
+    }
+  }else{
+    g.fillStyle = "#11171c"; g.fillRect(0,24,cssW,12);
+  }
+
+  // 当前位置
+  const cur = a[state.current];
+  if(cur){
+    const x = xOf(cur.frame);
+    g.fillStyle = "rgba(255,255,255,.9)";
+    g.fillRect(x-1, 0, 2, 46);
+    g.beginPath(); g.moveTo(x-5, 0); g.lineTo(x+5, 0); g.lineTo(x, 7); g.closePath(); g.fill();
+  }
+  $("tlLeft").textContent = `#${f0} · ${fmt(a[0].ts,1)}s`;
+  $("tlRight").textContent = `#${f1} · ${fmt(a[n-1].ts,1)}s`;
+}
+
+function tlFrameAt(ev){
+  const cv = $("tl"), r = cv.getBoundingClientRect();
+  const a = state.idx, f0 = a[0].frame, f1 = a[a.length-1].frame;
+  const ratio = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+  return Math.round(f0 + ratio*(f1-f0));
+}
+
+function bindTimeline(){
+  const cv = $("tl"), tip = $("tlTip");
+  const go = (ev)=>{ selectFrame(byFramePos(tlFrameAt(ev))); };
+  cv.addEventListener("mousedown", ev=>{ state.tlDrag = true; go(ev); });
+  window.addEventListener("mousemove", ev=>{
+    if(state.tlDrag) go(ev);
+    const r = cv.getBoundingClientRect();
+    if(ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom){ tip.style.display="none"; return; }
+    const f = tlFrameAt(ev), pos = byFramePos(f), rec = state.idx[pos];
+    if(!rec){ tip.style.display="none"; return; }
+    tip.textContent = `#${rec.frame} · ${fmt(rec.ts,2)}s · 轨迹${rec.nTrack} 候选${rec.nCand}`;
+    tip.style.display = "block";
+    tip.style.left = Math.max(0, Math.min(ev.clientX - r.left, r.width - tip.offsetWidth - 4)) + "px";
+  });
+  window.addEventListener("mouseup", ()=>{ state.tlDrag = false; });
+  cv.addEventListener("mouseleave", ()=>{ tip.style.display = "none"; });
+}
+
+/* ============================================================
+   左侧：本帧对象 + 全部轨迹
+   ============================================================ */
+function renderObjList(){
+  const el = $("objList"), m = state.model;
+  if(!m){ el.innerHTML = `<div class="sub">—</div>`; $("objCount").textContent=""; return; }
+  const rows = [];
+  for(const t of m.tracks){
+    const st = STATUS[t.snap.status]||{};
+    rows.push(`<div class="row${state.sel&&state.sel.kind==='track'&&state.sel.id===t.id?' cur':''}" data-track="${t.id}">
+      <span class="sw" style="background:${trackColor(t.id)}"></span>
+      <span class="k">#${t.id}</span>
+      <span class="t">${esc(shortName(t.display))}</span>
+      <span class="n">${esc(st.zh||t.snap.status)}</span>
+    </div>`);
+  }
+  for(const c of m.cands){
+    const res = c.fused ? (c.fused.result === "dropped" ? "剔除" : (c.fused.recognized ? "已识别" : "未达阈值")) : "候选";
+    const dropped = c.steps.some(s=>DROP_KEYS.includes(s.g.k));
+    rows.push(`<div class="row${state.sel&&state.sel.kind==='cand'&&state.sel.key===c.key?' cur':''}" data-cand="${esc(c.key)}">
+      <span class="sw" style="background:${dropped?"#e0575f":"#e8b33a"}"></span>
+      <span class="k">框</span>
+      <span class="t">${esc(shortName(res))}</span>
+      <span class="n">${c.bbox?c.bbox.map(Math.round).join(" "):""}</span>
+    </div>`);
+  }
+  el.innerHTML = rows.length ? rows.join("") : `<div class="sub">本帧无对象</div>`;
+  $("objCount").textContent = `${m.tracks.length}+${m.cands.length}`;
+  el.querySelectorAll("[data-track]").forEach(r=>r.addEventListener("click", ()=>selectTrack(Number(r.dataset.track), {jump:false})));
+  el.querySelectorAll("[data-cand]").forEach(r=>r.addEventListener("click", ()=>setSel({kind:"cand", key:r.dataset.cand})));
+  const cur = el.querySelector(".cur");
+  if(cur) cur.scrollIntoView({block:"nearest"});
+}
+
+function renderTrackList(){
+  const el = $("trackList");
+  const ids = [...state.series.keys()].sort((a,b)=>a-b);
+  $("trackCount").textContent = ids.length ? `${ids.length} 条` : "";
+  if(!ids.length){ el.innerHTML = `<div class="sub">无轨迹</div>`; return; }
+  el.innerHTML = ids.map(id=>{
+    const s = state.series.get(id);
+    const cls = modeOf(s.cls);
+    return `<div class="row${state.sel&&state.sel.kind==='track'&&state.sel.id===id?' cur':''}" data-id="${id}" title="点击：跳到它首次出现的帧">
+      <span class="sw" style="background:${trackColor(id)}"></span>
+      <span class="k">#${id}</span>
+      <span class="t">${esc(shortName(displayClass(cls)))}</span>
+      <span class="n">${s.frames.length}</span>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-id]").forEach(r=>{
+    r.addEventListener("click", ()=>selectTrack(Number(r.dataset.id), {jump:true}));
+  });
+  const cur = el.querySelector(".cur");
+  if(cur) cur.scrollIntoView({block:"nearest"});
+}
+
+function modeOf(arr){
+  const c = new Map();
+  for(const v of arr) c.set(v,(c.get(v)||0)+1);
+  let best = "", n = -1;
+  for(const [k,v] of c) if(v > n){ best = k; n = v; }
+  return best;
+}
+
+/* ============================================================
+   选择与右侧详情
+   ============================================================ */
+function setSel(sel){
+  state.sel = sel;
+  draw(); renderObjList(); renderDetail();
+}
+
+function selectTrack(id, opts={}){
+  state.sel = {kind:"track", id};
+  if(opts.jump){
+    const s = state.series.get(id);
+    if(s && s.frames.length){
+      const pos = byFramePos(s.frames[0]);
+      if(pos !== state.current){ selectFrame(pos); }
+    }
+  }
+  draw(); renderObjList(); renderTrackList(); renderDetail();
+}
+
+/* ============================================================
+   右栏：选中对象 / 本帧全量
+   ============================================================ */
+function setTab(tab){
+  state.tab = tab;
+  document.querySelectorAll("#rightTabs .tab").forEach(b=>b.classList.toggle("on", b.dataset.tab === tab));
+  // 「本帧全量」要放宽表，右栏临时加宽；画布会自己重新适配
+  document.querySelector("main").classList.toggle("wide", tab === "all");
+  renderDetail();
+}
+
+function selLabel(){
+  if(state.kind === "tracks") return "";
+  if(!state.sel) return "";
+  if(state.sel.kind === "track") return `#${state.sel.id}`;
+  return state.sel.key;
+}
+
+function renderDetail(){
+  const el = $("detail");
+  $("selKind").textContent = selLabel();
+  if(state.kind === "tracks"){
+    el.innerHTML = tracksModeView(state.currentRaw || {});
+    return;
+  }
+  if(state.tab === "all"){
+    el.innerHTML = frameAllHTML();
+    bindDetailEvents();
+    return;
+  }
+  if(!state.sel){
+    el.innerHTML = `<div class="empty">点画面里的框、左边列表，或时间轴上的任意位置。<br>
+      想看整帧的完整判定，切到上方「本帧全量」。</div>`;
+    return;
+  }
+  el.innerHTML = state.sel.kind === "track" ? trackDetail(state.sel.id) : candDetail(state.sel.key);
+  bindDetailEvents();
+}
+
+/* ---------- 本帧全量：四段链条，逐字段展开 ---------- */
+function frameAllHTML(){
+  const o = state.currentRaw, rec = state.idx[state.current];
+  if(!o) return `<div class="empty">这一帧的原始记录读不出来。</div>`;
+  const fl = o.filter || null;
+  const out = [];
+
+  out.push(`<div class="kv">
+    <dt>帧 / 时间</dt><dd>#${rec.frame} · ${fmt(rec.ts,3)}s</dd>
+    <dt>舞台时间</dt><dd>${fmt(o.stage_time,2)}s</dd>
+    <dt>倍速 / 缩放</dt><dd>${o.game_speed ?? "—"}X / ${fmt(o.time_scale,2)}</dd>
+    <dt>本帧检测</dt><dd>${o.detect ? "是" : "否（仅跟踪预测）"}</dd>
+    ${fl ? `<dt>速度上限</dt><dd>${fmt(fl.speed_threshold_px_s,0)} px/s</dd>
+    <dt>进入跟踪</dt><dd>${fl.accepted_count ?? "—"} 个</dd>
+    <dt>输出轨迹 ID</dt><dd>${esc((fl.output_track_ids||[]).join(", ") || "—")}</dd>` : ""}
+  </div>
+  <div class="sumLine">${esc(o.summary || "—")}</div>`);
+
+  out.push(`<div class="secT">① 原始候选 · ${(o.raw_detections||[]).length}</div>`);
+  out.push(o.detect ? candidatesTable(o) : `<div class="empty">本帧未做检测（隔帧检测或门控跳过）。</div>`);
+
+  out.push(`<div class="secT">② 加权融合 · HOG .3 / 地图 .3 / 图像 .4</div>`);
+  out.push(fusionAll(o));
+
+  out.push(`<div class="secT">③ 过滤决策</div>`);
+  out.push(filterAll(o));
+
+  out.push(`<div class="secT">④ 最终轨迹 · ${(o.tracks||[]).length}</div>`);
+  out.push(tracksTable(o));
+  return out.join("");
+}
+
+function candidatesTable(o){
+  const list = o.raw_detections || [];
+  if(!list.length) return `<div class="empty">前景差分为空：这一帧没有新出现的像素块。</div>`;
+  const rows = list.map(d=>{
+    const key = bboxKey(d.bbox);
+    const hl = state.sel && state.sel.kind === "cand" && state.sel.key === key ? ' class="hl"' : "";
+    return `<tr data-cand-key="${esc(key)}"${hl}>
+      <td class="mono">${d.bbox?d.bbox.map(Math.round).join(","):"—"}</td>
+      <td class="mono">${d.foot?Math.round(d.foot[0])+","+Math.round(d.foot[1]):"—"}</td>
+      <td>${esc(d.class)}${d.possible_friendly?' <span class="tag">我方?</span>':""}</td>
+      <td class="mono">${fmt(d.confidence,3)}</td>
+      <td>${d.health_bar?"✓":"—"}</td>
+      <td>${esc(d.faction||"—")}</td>
+      <td class="mono dim">${esc(d.candidate||"—")}</td>
+      <td class="mono dim">${esc(d.template||"—")}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="tscroll"><table class="dense"><thead><tr>
+    <th>框 x,y,w,h</th><th>脚</th><th>类别</th><th>置信</th><th>血条</th><th>阵营</th><th>候选</th><th>模板</th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function scoreTable(f){
+  const cls = f.classes || {};
+  const keys = Object.keys(cls).sort((a,b)=>cls[b].total - cls[a].total);
+  const rows = keys.map(k=>{
+    const s = cls[k], best = k === f.best_class;
+    return `<tr class="${best?"best":""}">
+      <td>${esc(shortName(displayClass(k)))}<span class="dim"> ${esc(String(k).replace(/^enemy_/,""))}</span></td>
+      <td class="mono">${fmt(s.hog_svm,3)}</td>
+      <td class="mono">${fmt(s.map,3)}</td>
+      <td class="mono">${fmt(s.image,3)}</td>
+      <td class="mono"><span class="bar mini"><i style="width:${pct(s.total)}%"></i>${f.threshold?`<u style="left:${pct(f.threshold)}%"></u>`:""}</span>${fmt(s.total,3)}</td>
+      <td class="mono dim">${esc(s.template||"—")}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="tscroll"><table class="dense2"><thead><tr>
+    <th>类别</th><th>HOG</th><th>地图</th><th>图像</th><th>总分</th><th>模板</th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function fusionAll(o){
+  if(!o.detect) return `<div class="empty">本帧未做检测。</div>`;
+  const items = (o.fusion && o.fusion.fused) || [];
+  if(!items.length) return `<div class="empty">没有候选进入融合。</div>`;
+  return items.map(c=>{
+    const key = bboxKey(c.bbox);
+    const hl = state.sel && state.sel.kind === "cand" && state.sel.key === key ? " hl" : "";
+    const box = c.bbox ? c.bbox.map(Math.round).join(",") : "";
+    if(c.result === "dropped"){
+      return `<div class="fcard bad${hl}" data-cand-key="${esc(key)}">
+        <div class="fhead"><span class="mono dim">${box}</span><b class="badTxt">已剔除</b>
+          <span class="tag">原类别 ${esc(c.original_class||"?")}</span></div>
+        <div class="why">${esc(c.reason)}</div></div>`;
+    }
+    return `<div class="fcard${hl}" data-cand-key="${esc(key)}">
+      <div class="fhead"><span class="mono dim">${box}</span>
+        ${c.recognized?`<b class="okTxt">→ ${esc(c.best_class)}</b>`:`<b class="noTxt">→ unknown</b>`}
+        <span class="tag">最佳 ${fmt(c.best_total,3)} / 阈值 ${fmt(c.threshold,2)}</span></div>
+      <div class="why">${esc(c.reason)}</div>
+      ${scoreTable(c)}</div>`;
+  }).join("");
+}
+
+function filterAll(o){
+  const fl = o.filter;
+  if(!fl) return `<div class="empty">本帧未做检测，没有过滤过程。</div>`;
+  let body = "", any = false;
+  for(const g of GROUPS){
+    const arr = fl[g.k];
+    if(!Array.isArray(arr) || !arr.length) continue;
+    any = true;
+    const open = (g.tone === "bad" || g.tone === "warn") ? " open" : "";
+    body += `<details class="grp ${g.tone}"${open}>
+      <summary><span class="badgeT">${esc(g.zh)}</span><span class="n">${arr.length}</span></summary>
+      <div class="gbody">${arr.map(it=>filterItem(g,it)).join("")}</div></details>`;
+  }
+  if(!any) return `<div class="empty">这一帧没有任何过滤动作。</div>`;
+  return `<button class="grpAll" id="grpToggle">展开/收起全部</button>${body}`;
+}
+
+function filterItem(g, it){
+  const bits = [];
+  if(it.slot_track_id !== undefined){
+    bits.push(`<span class="link" data-link="${it.slot_track_id}" style="color:${trackColor(it.slot_track_id)}">输出#${it.slot_track_id}</span>`);
+  }
+  if(it.track_id !== undefined) bits.push(`<span class="dim">内部#${it.track_id}</span>`);
+  if(it.nearest_track_id !== undefined) bits.push(`<span class="dim">最近内部#${it.nearest_track_id} · ${fmt(it.nearest_track_px,0)}px</span>`);
+  if(it.to) bits.push(`→ 类别 ${esc(it.to)}`);
+  if(it.speed_px_s !== undefined) bits.push(`速度 ${fmt(it.speed_px_s,0)} px/s`);
+  if(it.last_class) bits.push(`原类别 ${esc(it.last_class)}`);
+  const d = it.detection || (Array.isArray(it.bbox) ? it : null);
+  if(d){
+    bits.push(`框 ${d.bbox?d.bbox.map(Math.round).join(","):"—"}`);
+    bits.push(`${esc(d.class)} ${fmt(d.confidence,3)}`);
+    if(d.candidate) bits.push(`候选 ${esc(d.candidate)}`);
+    if(d.health_bar) bits.push("血条✓");
+    if(d.faction) bits.push(`阵营 ${esc(d.faction)}`);
+  }
+  return `<div class="item"><div class="why">${esc(it.reason||"—")}</div><div class="det">${bits.join(" · ")}</div></div>`;
+}
+
+function tracksTable(o){
+  const list = o.tracks || [];
+  if(!list.length) return `<div class="empty">本帧没有输出轨迹。</div>`;
+  const rows = list.map(t=>{
+    const hl = state.sel && state.sel.kind === "track" && state.sel.id === t.track_id ? ' class="hl"' : "";
+    return `<tr data-link="${t.track_id}"${hl}>
+      <td><b style="color:${trackColor(t.track_id)}">#${t.track_id}</b></td>
+      <td>${esc(t.class_display || displayClass(t.class))}</td>
+      <td>${pill(t.status)}</td>
+      <td class="mono">${fmt(t.confidence,3)}</td>
+      <td class="mono">${fmt(t.speed_px_s,0)}</td>
+      <td class="mono">${t.bbox?t.bbox.map(Math.round).join(","):"—"}</td>
+      <td class="mono">${t.foot?Math.round(t.foot[0])+","+Math.round(t.foot[1]):"—"}</td>
+      <td class="mono">${t.hits}/${t.misses}</td>
+      <td class="mono dim">${t.map_point?t.map_point.map(v=>fmt(v,2)).join(","):"—"}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="tscroll"><table class="dense"><thead><tr>
+    <th>ID</th><th>类别</th><th>状态</th><th>置信</th><th>速度</th><th>框</th><th>脚点</th><th>命中/丢失</th><th>地图点</th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/* ---------- 选中：轨迹 ---------- */
+function trackDetail(id){
+  const s = state.series.get(id);
+  if(!s) return `<div class="empty">没有这条轨迹的记录。</div>`;
+  const snap = (state.model && state.model.tracks.find(t=>t.id === id))?.snap;
+  const first = s.frames[0], last = s.frames[s.frames.length-1];
+  const counts = {};
+  for(const st of s.status) counts[st] = (counts[st]||0)+1;
+  const statusBits = Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${pill(k)} ${v}`).join(" ");
+  const changes = [];
+  for(let i=0;i<s.cls.length;i++) if(i===0 || s.cls[i] !== s.cls[i-1]) changes.push(`#${s.frames[i]} ${shortName(displayClass(s.cls[i]))}`);
+  const steps = (state.model && state.model.tracks.find(t=>t.id === id))?.steps || [];
+  const curFrame = state.idx[state.current]?.frame;
+
+  return `
+    <div class="selHead">
+      <span class="swatch" style="background:${trackColor(id)}"></span>
+      <b style="font-family:monospace;font-size:14px">#${id}</b>
+      ${snap?pill(snap.status):""}
+      ${snap && snap.status === "confirmed" && snap.misses > 0
+        ? `<span class="tag" title="本帧没匹配上，仍处于保持窗内">抖动保持 ${snap.misses}</span>` : ""}
+      ${snap?`<span class="mono" style="color:var(--fg3)">${fmt(snap.confidence,3)}</span>`:""}
+    </div>
+    ${snap?`<div class="kv">
+      <dt>类别</dt><dd>${esc(snap.class_display || displayClass(snap.class))}</dd>
+      <dt>本帧框</dt><dd>${snap.bbox.map(Math.round).join(", ")}</dd>
+      <dt>本帧脚点</dt><dd>${snap.foot.map(v=>fmt(v,1)).join(", ")}</dd>
+      <dt>本帧速度</dt><dd>${fmt(snap.speed_px_s,1)} px/s</dd>
+      <dt>命中 / 丢失</dt><dd>${snap.hits} / ${snap.misses}</dd>
+      <dt>地图坐标</dt><dd>${snap.map_point?snap.map_point.map(v=>fmt(v,2)).join(", "):"—"}</dd>
+    </div>`:`<div class="empty">本帧没有这条轨迹。</div>`}
+    <div class="jumpRow">
+      <button data-jump="${first}">首次 #${first}</button>
+      <button data-jump="${last}">末次 #${last}</button>
+      <button data-step="-1">上一帧</button>
+      <button data-step="1">下一帧</button>
+    </div>
+    <div class="secT">一生（点色带跳帧）</div>
+    <canvas id="life" height="34" style="width:100%;display:block;border-radius:3px;background:#0a0d10;cursor:pointer"></canvas>
+    <div class="kv" style="margin-top:8px">
+      <dt>存在区间</dt><dd>#${first} – #${last}（${s.frames.length} 帧）</dd>
+      <dt>主导类别</dt><dd>${esc(shortName(displayClass(modeOf(s.cls))))}</dd>
+      <dt>状态分布</dt><dd style="font-family:inherit">${statusBits}</dd>
+      <dt>速度区间</dt><dd>${fmt(Math.min(0,...s.speed),0)} – ${fmt(Math.max(0,...s.speed),0)} px/s</dd>
+      <dt>最长连续丢失</dt><dd>${Math.max(0,...s.miss)} 帧</dd>
+      <dt>类别变化</dt><dd style="font-family:inherit">${changes.length<=1?"全程一致":esc(changes.join(" → "))}</dd>
+    </div>
+    <div class="secT">本帧过滤步骤 · ${steps.length}</div>
+    ${steps.length?steps.map(x=>stepBlock(x)).join(""):nearbyHint(snap)}
+    <div class="secT">逐帧（点行跳转）</div>
+    <div class="mini">${s.frames.map((f,i)=>`<div class="row${f===curFrame?' cur':''}" data-jump="${f}">
+      <span class="k">#${f}</span>
+      <span class="t">${esc(statusText(s.status[i], s.miss[i]))}</span>
+      <span class="n">${fmt(s.conf[i],3)}</span>
+      <span class="n">${fmt(s.speed[i],0)}</span>
+      <span class="n">${fmt(s.miss[i],0)}</span>
+    </div>`).join("")}</div>`;
+}
+
+/* ---------- 选中：候选 ---------- */
+function candDetail(key){
+  const m = state.model;
+  const c = m && m.cands.find(x=>x.key === key);
+  if(!c) return `<div class="empty">本帧找不到这个候选。</div>`;
+  const b = c.bbox;
+  const out = [`<div class="selHead"><b class="mono">${b?b.map(Math.round).join(","):"—"}</b>
+      <span style="color:var(--fg3);font-size:11px">框 (x,y,w,h)</span></div>`];
+
+  out.push(`<div class="secT">① 原始候选</div>`);
+  if(c.raw){
+    const r = c.raw;
+    out.push(`<div class="kv">
+      <dt>脚点</dt><dd>${r.foot?r.foot.map(v=>fmt(v,1)).join(", "):"—"}</dd>
+      <dt>类别 / 置信</dt><dd>${esc(r.class)} ${fmt(r.confidence,3)}</dd>
+      <dt>候选类别</dt><dd>${esc(r.candidate||"—")}</dd>
+      <dt>模板</dt><dd>${esc(r.template||"—")}</dd>
+      <dt>血条</dt><dd>${r.health_bar?"有":"无"}</dd>
+      <dt>阵营证据</dt><dd>${esc(r.faction||"—")}</dd>
+      <dt>可能我方</dt><dd>${r.possible_friendly?"是":"否"}</dd>
+    </div>`);
+  }else{
+    out.push(`<div class="empty">这一帧没有它的原始候选记录（只出现在融合/过滤阶段）。</div>`);
+  }
+
+  out.push(`<div class="secT">② 加权融合</div>`);
+  if(c.fused){
+    const f = c.fused;
+    if(f.result === "dropped"){
+      out.push(`<div class="fcard bad"><div class="fhead"><b class="badTxt">已剔除</b>
+        <span class="tag">原类别 ${esc(f.original_class||"?")}</span></div>
+        <div class="why">${esc(f.reason)}</div></div>`);
+    }else{
+      out.push(`<div class="fcard">
+        <div class="fhead">${f.recognized?`<b class="okTxt">→ ${esc(f.best_class)}</b>`:`<b class="noTxt">→ unknown</b>`}
+          <span class="tag">最佳 ${fmt(f.best_total,3)} / 阈值 ${fmt(f.threshold,2)}</span></div>
+        <div class="why">${esc(f.reason)}</div>
+        ${scoreTable(f)}</div>`);
+    }
+  }else{
+    out.push(`<div class="empty">没有进入融合。</div>`);
+  }
+
+  out.push(`<div class="secT">③ 过滤决策 · ${c.steps.length}</div>`);
+  if(c.steps.length){
+    out.push(c.steps.map(x=>stepBlock(x)).join(""));
+  }else{
+    const recognized = c.fused && c.fused.recognized;
+    out.push(`<div class="empty">这一帧没有针对它的过滤记录。${
+      recognized
+        ? "<br><br>旧版渲染器在「路线指引速度剔除」里丢弃候选时不写日志，所以这份 trace 看不到原因；"
+          + "当前代码已补上（并在丢弃时记录 <code>guides</code>，配额拒绝记录 <code>budget_rejected</code>）。"
+          + "重新渲染一次这份 trace 就能在这里看到中文理由。"
+        : ""
+    }</div>`);
+  }
+
+  out.push(`<div class="secT">④ 落到轨迹</div>`);
+  out.push(c.trackIds.size
+    ? [...c.trackIds].map(id=>`<div class="row" data-link="${id}">
+        <span class="sw" style="background:${trackColor(id)}"></span>
+        <span class="k">#${id}</span><span class="t">查看它的一生</span></div>`).join("")
+    : `<div class="empty">这个候选没有进入任何输出轨迹。</div>`);
+
+  return out.join("");
+}
+
+function nearbyHint(snap){
+  const rec = state.idx[state.current];
+  if(rec && !rec.detect){
+    return `<div class="empty">本帧未做检测（隔帧检测），没有候选可比对；翻到相邻帧看检测结果。</div>`;
+  }
+  const m = state.model;
+  if(!m || !snap) return `<div class="empty">本帧没有与它相关的过滤记录。</div>`;
+  const near = [];
+  for(const c of m.cands){
+    if(!c.bbox) continue;
+    const cx = c.bbox[0] + c.bbox[2]/2;
+    const cy = c.bbox[1] + c.bbox[3] - 1;
+    const d = Math.hypot(cx - snap.foot[0], cy - snap.foot[1]);
+    if(d <= 260) near.push({c, d});
+  }
+  if(!near.length){
+    return `<div class="empty">本帧 260 px 内没有任何候选：它这一帧很可能确实不在画面里（被遮挡或已离场）。</div>`;
+  }
+  near.sort((a,b)=>a.d-b.d);
+  const sel = state.sel && state.sel.kind === "track" ? state.sel.id : null;
+  const rows = near.slice(0,4).map(({c, d})=>{
+    let outcome;
+    if(c.steps.length){
+      outcome = c.steps.map(({g: grp, it, owner})=>{
+        const who = (owner !== null && owner !== undefined)
+          ? (owner === sel ? "输出#" + owner : `<span style="color:var(--warn)">输出#${owner}</span>`)
+          : "";
+        const why = it.reason ? "：" + esc(it.reason) : "";
+        return `<b>${esc(grp.zh)}</b>${who ? " → " + who : ""}${why}`;
+      }).join("；");
+    }else if(c.fused){
+      outcome = `融合 ${c.fused.recognized?("判定 "+esc(c.fused.best_class)):"未达阈值"}，但本帧没有任何过滤记录`;
+    }else{
+      outcome = "只有原始候选，没有进入融合";
+    }
+    return `<div class="item"><div class="why">相距 ${d.toFixed(0)} px · 框 ${esc(c.key)}</div>
+      <div class="det">${outcome}</div></div>`;
+  }).join("");
+  return `<div class="empty" style="padding:0 0 4px">本帧没有直接归属到它的步骤。附近候选的去向：</div>${rows}`;
+}
+
+function stepBlock(x){
+  const it = x.it, g = x.g;
+  const det = it.detection;
+  const bits = [];
+  if(det) bits.push(`框 ${det.bbox?det.bbox.map(Math.round).join(","):"—"} · ${esc(det.class)} ${fmt(det.confidence,3)}`);
+  if(det && det.candidate) bits.push(`候选 ${esc(det.candidate)}`);
+  if(det && det.health_bar) bits.push("血条✓");
+  if(it.speed_px_s !== undefined) bits.push(`速度 ${fmt(it.speed_px_s,0)} px/s`);
+  const refs = [];
+  if(it.slot_track_id !== undefined) refs.push(`输出#${it.slot_track_id}`);
+  if(it.track_id !== undefined) refs.push(`内部#${it.track_id}`);
+  if(it.nearest_track_id !== undefined) refs.push(`最近内部#${it.nearest_track_id}·${fmt(it.nearest_track_px,0)}px`);
+  if(refs.length) bits.push(refs.join(" · "));
+  return `<div class="grp ${g.tone}" style="border:none;border-left:2px solid;margin-bottom:4px">
+    <div style="padding:3px 8px">
+      <div class="badgeT" style="display:inline-block;margin-bottom:2px">${esc(g.zh)}</div>
+      <div class="why" style="font-size:11.5px;color:var(--fg)">${esc(it.reason||"—")}</div>
+      ${bits.length?`<div class="det">${bits.join(" · ")}</div>`:""}
+    </div></div>`;
+}
+
+function bindDetailEvents(){
+  const el = $("detail");
+  el.querySelectorAll("[data-jump]").forEach(n=>n.addEventListener("click", ()=>selectFrame(byFramePos(Number(n.dataset.jump)))));
+  el.querySelectorAll("[data-step]").forEach(n=>n.addEventListener("click", ()=>stepFrame(Number(n.dataset.step))));
+  el.querySelectorAll("[data-link]").forEach(n=>n.addEventListener("click", e=>{
+    e.stopPropagation();
+    selectTrack(Number(n.dataset.link), {jump:false});
+  }));
+  el.querySelectorAll("[data-cand-key]").forEach(n=>n.addEventListener("click", ()=>{
+    setSel({kind:"cand", key:n.dataset.candKey});
+  }));
+  const toggle = $("grpToggle");
+  if(toggle) toggle.addEventListener("click", ()=>{
+    const groups = [...el.querySelectorAll("details.grp")];
+    const open = groups.some(d=>!d.open);
+    groups.forEach(d=>{ d.open = open; });
+  });
+  const curRow = el.querySelector(".mini .cur");
+  if(curRow) curRow.scrollIntoView({block:"nearest"});
+  const life = $("life");
+  if(life && state.sel && state.sel.kind === "track"){
+    drawLife(life, state.series.get(state.sel.id));
+    life.addEventListener("click", ev=>{
+      const s = state.series.get(state.sel.id);
+      const r = life.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (ev.clientX-r.left)/r.width));
+      const i = Math.round(ratio*(s.frames.length-1));
+      selectFrame(byFramePos(s.frames[i]));
+    });
+  }
+}
+
+function drawLife(cv, s){
+  if(!s) return;
+  const cssW = cv.clientWidth || 320, dpr = window.devicePixelRatio||1;
+  cv.width = Math.round(cssW*dpr); cv.height = Math.round(34*dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,cssW,34);
+  const n = s.frames.length;
+  for(let i=0;i<n;i++){
+    const x = n>1 ? i/(n-1)*(cssW-1) : 0;
+    g.fillStyle = (STATUS[s.status[i]]&&STATUS[s.status[i]].color) || "#39424b";
+    g.fillRect(x, 4, Math.max(1, cssW/n), 26);
+  }
+  const curFrame = state.idx[state.current]?.frame;
+  const k = s.frames.indexOf(curFrame);
+  if(k >= 0){
+    const x = n>1 ? k/(n-1)*(cssW-1) : 0;
+    g.fillStyle = "#fff"; g.fillRect(x-1, 0, 2, 34);
+  }
+}
+
+/* ============================================================
+   视频（提供真实画面）
+   ============================================================ */
+function mountVideo(file){
+  const objectUrl = URL.createObjectURL(file);
+  mountVideoSource(objectUrl, file.name, true);
+}
+
+function mountVideoSource(src, name, revokeOnReplace){
+  if(state.video && state.video.src && state.videoRevoke) URL.revokeObjectURL(state.video.src);
+  const v = document.createElement("video");
+  v.src = src;
+  state.videoRevoke = !!revokeOnReplace;
+  v.muted = true; v.preload = "auto"; v.playsInline = true;
+  // 放在屏幕外但保持正常尺寸：display:none / 2×2 会让浏览器推迟解码，drawImage 拿不到帧
+  v.style.cssText = "position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none";
+  document.body.appendChild(v);
+  state.video = v; state.videoReady = false;
+  const ready = ()=>{
+    if(state.videoReady) return;
+    state.videoReady = true;
+    setStatus("视频已就绪｜"+name);
+    const rec = state.idx[state.current];
+    if(rec) seekVideo(rec); else draw();
+  };
+  v.addEventListener("loadeddata", ready);
+  v.addEventListener("canplay", ready);
+  v.addEventListener("error", ()=>{
+    const code = v.error ? v.error.code : "?";
+    setStatus(`视频加载失败（code ${code}）：${name}`);
+  });
+  v.addEventListener("seeked", ()=>{ draw(); });
+  v.load();
+  const rec = state.idx[state.current];
+  if(rec) seekVideo(rec);
+}
+
+function seekVideo(rec){
+  const v = state.video;
+  if(!v || !state.videoReady || !rec) return;
+  if(Math.abs(v.currentTime - rec.ts) > 0.03){
+    try{ v.currentTime = rec.ts; }catch{}
+  }else{
+    draw();
+  }
+}
+
+/* ============================================================
+   关卡路线（由 serve.py 从关卡 JSON + 标定算出普通/飞行/Boss）
+   ============================================================ */
+async function loadRoutes(){
+  try{
+    const res = await fetch("/routes.json", {cache:"no-store"});
+    const data = await res.json();
+    if(!data || !data.available) return;
+    state.routes = data;
+    draw();
+  }catch{ /* 直接双击打开 index.html 时没有这个接口，安静跳过 */ }
+}
+
+/* ============================================================
+   FV 联动（token 只在 serve.py 里，页面只访问同源 /fv/*）
+   ============================================================ */
+const fv = { available:false, connected:false, mode:"off", state:null, error:"", timer:null, seekTimer:null };
+
+function setFvMode(mode){
+  fv.mode = mode;
+  if(mode === "drive" && fv.connected && state.current >= 0) fvDrive(state.idx[state.current]);
+  if(mode === "follow") fvFollow();
+  fvRender();
+  setStatus(mode==="off"?"FV 联动已关闭":mode==="follow"?"跟随 FV":"驱动 FV");
+}
+
+function fvRender(){
+  const el = $("fvBar");
+  if(!el) return;
+  if(!fv.available){ el.style.display = "none"; return; }
+  el.style.display = "flex";
+  el.classList.toggle("off", !fv.connected);
+  const show = (id,on)=>{ const n=$(id); if(n) n.classList.toggle("hide", !on); };
+  show("fvMsg", !fv.connected);
+  for(const id of ["fvClip","fvPos","fvPlayState","fvFollow","fvDrive","fvPlayBtn"]) show(id, fv.connected);
+  if(!fv.connected){ $("fvMsg").textContent = fv.error || "未连接"; return; }
+  const s = fv.state || {};
+  $("fvClip").textContent = s.clipName || s.clipPath || "—";
+  $("fvPos").textContent = `${fmt(s.position,2)}s / ${fmt(s.duration,1)}s`;
+  $("fvPlayState").textContent = s.playing ? "播放中" : "已暂停";
+  $("fvFollow").classList.toggle("on", fv.mode==="follow");
+  $("fvDrive").classList.toggle("on", fv.mode==="drive");
+}
+
+async function fvProbe(refresh){
+  let info;
+  try{
+    const res = await fetch("/fv/info" + (refresh?"?refresh=1":""), {cache:"no-store"});
+    info = await res.json();
+  }catch{ return; }
+  fv.available = true;
+  if(info.available){
+    fv.connected = true; fv.error = ""; fv.state = info.state || null;
+    const want = new URLSearchParams(location.search).get("fv");
+    if(want === "off" || want === "follow" || want === "drive") fv.mode = want;
+    else if(fv.mode === "off") fv.mode = "follow";
+    if(!fv.timer) fv.timer = setInterval(fvPoll, 400);
+  }else{
+    fv.connected = false; fv.error = info.error || "未连接";
+    if(fv.timer){ clearInterval(fv.timer); fv.timer = null; }
+  }
+  fvRender();
+  if(fv.connected){
+    if(fv.mode === "drive" && state.current >= 0) fvDrive(state.idx[state.current]);
+    else fvFollow();
+  }
+}
+
+async function fvPoll(){
+  try{
+    const res = await fetch("/fv/state", {cache:"no-store"});
+    const s = await res.json();
+    if(!s || s.error) throw new Error((s && s.error) || "无响应");
+    fv.state = s; fv.connected = true;
+  }catch(err){
+    fv.connected = false; fv.state = null; fv.error = String((err&&err.message)||err);
+    if(fv.timer){ clearInterval(fv.timer); fv.timer = null; }
+  }
+  fvRender(); fvFollow();
+}
+
+function fvFollow(){
+  if(fv.mode !== "follow" || !fv.connected || !fv.state) return;
+  const pos = fv.state.position;
+  if(typeof pos !== "number" || !Number.isFinite(pos)) return;
+  const rec = state.idx[state.current];
+  if(!rec || Math.abs(rec.ts - pos) <= 0.15) return;
+  selectFrame(byTimePos(pos), {silent:true});
+}
+
+function fvDrive(rec){
+  if(fv.mode !== "drive" || !fv.connected || !rec) return;
+  clearTimeout(fv.seekTimer);
+  fv.seekTimer = setTimeout(()=>{
+    fetch("/fv/seek", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({positionSeconds: rec.ts})}).catch(()=>{});
+  }, 120);
+}
+
+async function fvTogglePlay(){
+  try{
+    await fetch("/fv/playback", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({playing: !(fv.state && fv.state.playing)})});
+  }catch{}
+  setTimeout(fvPoll, 200);
+}
+
+/* ============================================================
+   tracks.jsonl 误载守卫
+   ============================================================ */
+function tracksModeView(o){
+  const rec = state.idx[state.current];
+  return `<div class="notice">
+    <div><b>这个文件是 tracks.jsonl，不是 trace.jsonl</b></div>
+    <ul style="margin:6px 0 8px;padding-left:18px;color:var(--fg2)">
+      <li><code>tracks.jsonl</code>：每行 = 某一帧里的某一条轨迹。这里 ${state.idx.length} 行只对应 ${state.byFrame.size} 个帧，
+          没有 <code>detect</code>/<code>fusion</code>/<code>filter</code>。</li>
+      <li><code>trace.jsonl</code>：每行 = 一整帧，才带四段决策链。</li>
+    </ul>
+    <div>生成：<code>--trace &lt;路径&gt;</code></div>
+    <div>现成可用：<code>output/1_8_hud_weighted_fusion/trace.jsonl</code></div>
+  </div>
+  <div class="kv">
+    <dt>帧</dt><dd>#${rec.frame} · ${fmt(rec.ts,2)}s</dd>
+    <dt>轨迹</dt><dd>#${o.track_id||"—"}</dd>
+    <dt>类别</dt><dd>${esc(o.enemy_id||"—")}</dd>
+    <dt>状态</dt><dd>${pill(o.status)}</dd>
+    <dt>置信</dt><dd>${fmt(o.confidence,3)}</dd>
+  </div>`;
+}
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+$("btnOpen").addEventListener("click", ()=>$("fileInput").click());
+$("pick2").addEventListener("click", ()=>$("fileInput").click());
+$("btnVideo").addEventListener("click", ()=>$("videoInput").click());
+$("fileInput").addEventListener("change", e=>{ const f=e.target.files[0]; if(f) indexFile(f); });
+$("videoInput").addEventListener("change", e=>{ const f=e.target.files[0]; if(f) mountVideo(f); });
+
+$("q").addEventListener("input", e=>{ state.filters.q = e.target.value; applyFilters(); });
+function bindChip(id,key){
+  const el = $(id);
+  el.addEventListener("click", ()=>{ state.filters[key] = !state.filters[key]; el.classList.toggle("on", state.filters[key]); applyFilters(); });
+}
+bindChip("fDrop","drop"); bindChip("fGuide","guide"); bindChip("fDetect","detectOnly");
+document.querySelectorAll("#rightTabs .tab").forEach(b=>b.addEventListener("click", ()=>setTab(b.dataset.tab)));
+$("fRoutes").addEventListener("click", ()=>{ state.showRoutes = !state.showRoutes; $("fRoutes").classList.toggle("on", state.showRoutes); draw(); });
+
+$("fvFollow").addEventListener("click", ()=>setFvMode(fv.mode==="follow"?"off":"follow"));
+$("fvDrive").addEventListener("click", ()=>setFvMode(fv.mode==="drive"?"off":"drive"));
+$("fvPlayBtn").addEventListener("click", fvTogglePlay);
+$("fvReconnect").addEventListener("click", ()=>fvProbe(true));
+
+document.addEventListener("keydown", e=>{
+  const tag = (e.target.tagName||"").toLowerCase();
+  if(tag === "input" || tag === "textarea") return;
+  if(!state.idx.length) return;
+  if(e.key === "ArrowRight"){ e.preventDefault(); stepFrame(e.shiftKey?10:1); }
+  else if(e.key === "ArrowLeft"){ e.preventDefault(); stepFrame(e.shiftKey?-10:-1); }
+  else if(e.key === "Home"){ e.preventDefault(); selectFrame(state.visible[0] ?? 0); }
+  else if(e.key === "End"){ e.preventDefault(); selectFrame(state.visible[state.visible.length-1] ?? 0); }
+  else if(e.key === "d"){ $("fDetect").click(); }
+  else if(e.key === "g"){ $("fGuide").click(); }
+  else if(e.key === "u"){ $("fDrop").click(); }
+  else if(e.key === "v"){ $("videoInput").click(); }
+  else if(e.key === "Escape"){ setSel(null); }
+  else if(e.key === "/"){ e.preventDefault(); $("q").focus(); }
+});
+
+let dragDepth = 0;
+window.addEventListener("dragenter", e=>{
+  if(!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+  dragDepth++; $("drop").classList.add("show");
+});
+window.addEventListener("dragover", e=>e.preventDefault());
+window.addEventListener("dragleave", ()=>{ if(--dragDepth <= 0){ dragDepth = 0; $("drop").classList.remove("show"); } });
+window.addEventListener("drop", e=>{
+  e.preventDefault(); dragDepth = 0; $("drop").classList.remove("show");
+  const f = e.dataTransfer.files[0]; if(!f) return;
+  if(f.type.startsWith("video/")) mountVideo(f); else indexFile(f);
+});
+
+let resizeTimer = null;
+window.addEventListener("resize", ()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(()=>{ drawTimeline(); draw(); if(state.sel) renderDetail(); }, 80);
+});
+
+/* 画布按容器等比缩放（保持 1920×1080），每次都按当前容器重算，避免布局未稳定时算小 */
+function applyFit(){
+  const stage = $("stage"), wrap = $("canvasWrap"), cv = $("view");
+  const availW = Math.max(120, stage.clientWidth - 16);
+  const availH = Math.max(68, stage.clientHeight - 16);
+  const scale = Math.min(availW / W, availH / H);
+  const w = Math.floor(W*scale), h = Math.floor(H*scale);
+  if(wrap.dataset.w !== String(w) || wrap.dataset.h !== String(h)){
+    wrap.dataset.w = String(w); wrap.dataset.h = String(h);
+    wrap.style.width = w + "px"; wrap.style.height = h + "px";
+  }
+  if(cv.style.width !== "100%"){ cv.style.width = "100%"; cv.style.height = "100%"; }
+}
+
+new ResizeObserver(()=>{ draw(); }).observe($("stage"));
+new ResizeObserver(()=>{ drawTimeline(); }).observe($("timeline"));
+
+bindCanvas();
+bindTimeline();
+drawTimeline();
+loadRoutes();
+fvProbe();
+
+/* ?trace= 自动载入 */
+(async function autoLoad(){
+  const url = new URLSearchParams(location.search).get("trace");
+  if(!url) return;
+  try{
+    setStatus("下载 "+url+" …");
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const blob = await res.blob();
+    const f = new File([blob], decodeURIComponent(url.split("/").pop()||"trace.jsonl"), {type:"application/jsonl"});
+    await indexFile(f);
+    // ?video= 时把服务端提供的 mp4 直接挂上，画面就是真实帧
+    const video = new URLSearchParams(location.search).get("video");
+    if(video) mountVideoSource(video, decodeURIComponent(video.split("/").pop()||"video.mp4"), false);
+  }catch(err){
+    $("welcome").innerHTML = `<div class="box"><h2 class="err">自动载入失败</h2>
+      <p>${esc(String(err))}</p><p>直接把 trace.jsonl 拖进页面即可。</p></div>`;
+  }
+})();
+</script>
+</body>
+</html>
