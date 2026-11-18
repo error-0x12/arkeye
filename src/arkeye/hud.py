@@ -45,6 +45,8 @@ class HUDRenderer:
     ) -> NDArray[np.uint8]:
         output = frame.copy()
         for track in tracks:
+            if track.enemy_id == "unknown" and track.status == "lost" and track.misses > 15:
+                continue
             color = self._color(track.track_id)
             history = track.history[-self.history_length :]
             if len(history) > 1:
